@@ -1,0 +1,23 @@
+# 领域注册表 —— 论文抽取包自带的完整中西医结合本体（5 域）
+# 与 medkg 生产本体一致：core + tcm 为生产原文件；wm/bridge/lit 为中西医结合扩展。
+# 说明：本包保持 tcm.yaml 现状（3 条桥关系 MAPS_TO_ICD/MAPS_TO_ATC/INTERACTS_WITH 暂留 tcm 域），
+#       故 bridge.yaml 不重复定义它们。此配置已用 medkg loader 验证可加载（53 实体 / 87 关系 / 0 悬挂）。
+domains:
+  active: [core, tcm, wm, bridge, lit]
+  files:
+    core: core.yaml
+    tcm: tcm.yaml
+    wm: wm.yaml
+    bridge: bridge.yaml
+    lit: lit.yaml
+
+merge_policy:
+  on_duplicate_type: error
+  closed_class_from_enum: true
+
+status:
+  core: stable
+  tcm: production-v2.1
+  wm: proposed-v1.0
+  bridge: proposed-v1.0
+  lit: proposed-v1.0

@@ -1,0 +1,92 @@
+# ============================================================================
+# 中西医融合桥 bridge —— TCM 域与 WM 域之间的跨域关系【提案版 v1.0】
+#
+# 定位：把"中西医结合"的语义显式建模为一层独立领域，而非散落在 tcm.yaml。
+#   收益：(1) 所有跨域边集中治理/审计/许可；(2) 消费端可只订阅 bridge 子图做中西医对照；
+#         (3) 新增桥关系不动 tcm/wm 主本体。
+#
+# 迁移说明（schema_version 升级项，见设计文档 §5.4）：
+#   tcm.yaml 现有的 3 条桥关系 MAPS_TO_ICD / MAPS_TO_ATC / INTERACTS_WITH 语义上属于本域，
+#   建议在 v2.2 一并迁入 bridge.yaml 并从 tcm.yaml 删除（loader on_duplicate=error，不能两处并存）。
+#   本提案文件**不重复定义**那 3 条，仅新增桥关系；激活前先做迁移，否则加载报重复。
+#
+# 依赖：range 引用 wm.yaml 的 DiseaseWM/DrugWestern/Gene/MolecularEntity/Pathway/PhenotypicFeature/LabTest；
+#       domain 引用 tcm.yaml 的 Disease/Syndrome/Herb/HerbProcessed/Formula/PatentMedicine/TreatmentPrinciple。
+# ============================================================================
+domain: bridge
+
+# 桥层不新增实体类型；桥用一个可选中介实体承载"中西医结合方案"这种复合治法。
+entity_types:
+  IntegrativeRegimen:
+    desc: "中西医结合治疗方案（中药/中成药 + 西药/操作的组合，带主辅定位与循证等级）"
+    key_props: [aliases, setting]      # setting: 住院/门诊/围术期/康复期
+
+relation_types:
+  # ── A. 病证语义映射（诊断层对齐）──────────────────────────────────────────
+  CORRESPONDS_TO_WM_DISEASE:
+    desc: "中医病名/证候 ↔ 西医疾病 的语义对应（非等同！用 mapping_type 标注粒度）"
+    domain: [Disease, Syndrome]
+    range: [DiseaseWM]
+    card: "n..n"
+    qualifiers: [mapping_type, basis]   # mapping_type: equivalent/broader/narrower/related/overlaps
+                                        # basis: 国标GB/T / 指南 / 文献共识 / 专家标注
+  SYNDROME_CORRELATES_WITH:
+    desc: "证候的西医客观关联（生物标志/表型/靶基因）—— 证候客观化研究成果入图"
+    domain: [Syndrome]
+    range: [PhenotypicFeature, LabTest, Gene]
+    card: "n..n"
+    qualifiers: [direction, effect_size, evidence_grade]  # direction: 升高/降低/阳性率↑
+
+  # ── B. 网络药理（中药 → 分子 → 靶点 → 通路/病，机制层贯通）────────────────
+  HERB_CONTAINS_INGREDIENT:
+    desc: "中药材/饮片 含 活性化学成分（网络药理链起点；跨 TCM→WM 分子层）"
+    domain: [Herb, HerbProcessed]
+    range: [MolecularEntity]
+    card: "n..n"
+    qualifiers: [content, assay]        # content: 含量; assay: 检测方法/文献
+  FORMULA_ACTS_VIA:
+    desc: "方剂/中成药 经 靶基因/通路 发挥作用（整方网络药理机制）"
+    domain: [Formula, PatentMedicine]
+    range: [Gene, Pathway]
+    card: "n..n"
+    qualifiers: [evidence_grade, mechanism]
+  # 注：成分→靶点 用 wm.MOLECULARLY_TARGETS（domain 已含 MolecularEntity）；
+  #     故完整链 = Herb -HERB_CONTAINS_INGREDIENT-> MolecularEntity -MOLECULARLY_TARGETS-> Gene
+  #                -GENE_ASSOCIATED_WITH_DISEASE-> DiseaseWM，全部可 3–4 跳溯源。
+
+  # ── C. 用药安全（中西药互作）──────────────────────────────────────────────
+# C. 用药安全（中西药互作）
+  # 复用 tcm.INTERACTS_WITH（domain/range 已含 DrugWestern+Herb, symmetric）承载草药-西药互作；
+  # 本域补充两种互作：确定性 HDI（临床/实验证据）+ 预测性 HDI_VIA_SHARED_TARGET（机制推断）
+  HDI:
+    desc: "中药-西药相互作用（临床/实验确定性证据），asymmetric——中药影响西药的药代/药效"
+    domain: [Herb, HerbProcessed, PatentMedicine]
+    range: [DrugWestern]
+    card: "n..n"
+    qualifiers: [severity, interaction_type, effect_description, evidence_grade, mechanism, clinical_consequence, reversibility, frequency, population_risk, sample_size, blinding, multicenter, bias_risk]
+  HDI_VIA_SHARED_TARGET:
+    desc: "中药-西药 经共享靶基因/通路 的潜在相互作用（机制可解释，区别于确定性 HDI）"
+    domain: [Herb, HerbProcessed, PatentMedicine]
+    range: [DrugWestern]
+    card: "n..n"
+    qualifiers: [severity, interaction_type, effect_description, evidence_grade, mechanism, clinical_consequence, reversibility, frequency, population_risk, sample_size, blinding, multicenter, bias_risk]
+
+  # ── D. 中西医结合治疗（论治层协同）────────────────────────────────────────
+  INTEGRATIVE_TREATS:
+    desc: "中西医结合方案 治疗 西医病/中医病证"
+    domain: [IntegrativeRegimen]
+    range: [DiseaseWM, Disease, Syndrome]
+    card: "n..n"
+    qualifiers: [evidence_grade, outcome]
+  REGIMEN_INCLUDES:
+    desc: "结合方案 纳入 具体中/西治疗要素（带主辅角色）"
+    domain: [IntegrativeRegimen]
+    range: [Formula, PatentMedicine, Herb, DrugWestern, Procedure, TreatmentPrinciple]
+    card: "n..n"
+    qualifiers: [role]                  # role: 主治/辅助/减毒增效/对症
+  COMPLEMENTS_WM_THERAPY:
+    desc: "中医治法/方剂 增效/减毒 西医治疗（如放化疗期中药减毒）"
+    domain: [Formula, PatentMedicine, TreatmentPrinciple, Herb]
+    range: [DrugWestern, Procedure]
+    card: "n..n"
+    qualifiers: [effect, evidence_grade]  # effect: 增效/减毒/改善耐受/延缓耐药

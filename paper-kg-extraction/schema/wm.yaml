@@ -1,0 +1,208 @@
+# ============================================================================
+# 西医领域 wm —— 中西医结合的西医侧（在 PrimeKG 基础上扩展 + Biolink Model 对齐）
+# 【提案版 v1.0】。取代 configs/ontology/wm.yaml 的 stub-v0.1；激活见 registry.proposed.yaml。
+#
+# 设计依据：
+#   - PrimeKG (Nature SciData 2023)：10 类节点 (gene/protein, drug, disease, phenotype,
+#     biological_process, molecular_function, cellular_component, pathway, anatomy, exposure)
+#     + 4M 关系。primekg.csv 已在 external_kgs/（982MB）。
+#   - Biolink Model (arXiv 2203.13906)：category / predicate 规范，用于命名与语义对齐。
+#   - 与 knowledge_graph/ontology/medical_ontology.yaml（已建 378K/10M 图）做名称 crosswalk，
+#     该 flat 本体作为**数据源**映射进本 schema，不直接合并（见设计文档 §3.4 crosswalk 表）。
+#
+# 命名冲突规避（loader 跨域 on_duplicate=error）：本文件不得重定义 core/tcm 已有的关系名。
+#   已占用：TREATS, TARGETS_ELEMENT, INTERACTS_WITH, MAPS_TO_ICD, MAPS_TO_ATC,
+#           HAS_PHENOTYPE(wm stub), WM_TREATS(wm stub), COMPOSED_OF(tcm), CONTRAINDICATED_IN(tcm)。
+#   → WM 内部关系一律用 WM 前缀或 Biolink 化的独立名，避免与辨证语义撞名。
+# ============================================================================
+domain: wm
+
+entity_types:
+  # ── 疾病 / 药物（TCM 桥接锚点；同时是完整西医图的一级实体）──
+  DiseaseWM:
+    desc: "西医疾病/临床情况（ICD-11 主体；对齐 MONDO/DOID/MeSH）"
+    canonical_vocab: icd11
+    key_props: [icd_code, mondo_id, doid_id, mesh_id, umls_cui, aliases, name_en]
+  DrugWestern:
+    desc: "西药/化学药（ATC；对齐 DrugBank/ChEMBL/RxNorm）"
+    canonical_vocab: atc
+    key_props: [atc_code, drugbank_id, chembl_id, rxnorm_id, inchikey, aliases, name_en]
+
+  # ── 分子层（网络药理与机制推理的骨架；PrimeKG 生物医学核心）──
+  Gene:
+    desc: "基因/基因产物（gene or gene product；Biolink:GeneOrGeneProduct）"
+    key_props: [symbol, ncbi_gene_id, hgnc_id, ensembl_id, uniprot_id, aliases]
+  MolecularEntity:
+    desc: "化学分子/成分（中药活性成分、药物母体、代谢物；Biolink:MolecularEntity）"
+    key_props: [inchikey, pubchem_cid, chembl_id, chebi_id, formula, aliases, name_en]
+  Pathway:
+    desc: "生物学通路（Reactome/KEGG；Biolink:Pathway）"
+    key_props: [reactome_id, kegg_id, name_en]
+  BiologicalProcess:
+    desc: "GO 生物学过程（Biolink:BiologicalProcess）"
+    key_props: [go_id, name_en]
+  MolecularFunction:
+    desc: "GO 分子功能（Biolink:MolecularActivity）"
+    key_props: [go_id, name_en]
+  CellularComponent:
+    desc: "GO 细胞组分（Biolink:CellularComponent）"
+    key_props: [go_id, name_en]
+  AnatomicalEntity:
+    desc: "解剖/组织结构（UBERON；Biolink:AnatomicalEntity）。与 tcm BodyStructure 语义不同：此为西医组织学定位"
+    key_props: [uberon_id, name_en]
+  PhenotypicFeature:
+    desc: "表型/临床征象（HPO；Biolink:PhenotypicFeature）"
+    canonical_vocab: hpo
+    key_props: [hpo_id, name_en]
+  Exposure:
+    desc: "环境/行为暴露（Biolink:ExposureEvent）"
+    key_props: [exposure_type, name_en]
+
+  # ── 诊疗操作与检验 ──
+  Procedure:
+    desc: "医疗操作/手术/介入（Biolink:Procedure；SNOMED-CT 可选）"
+    key_props: [snomed_id, name_en]
+  LabTest:
+    desc: "检验/检查项与生物标志物（LOINC；Biolink:Diagnostic/LabResult）"
+    canonical_vocab: loinc
+    key_props: [loinc_code, unit, ref_range, name_en]
+
+relation_types:
+  # ── 药物-疾病（治疗/禁忌/适应证）──
+  WM_TREATS:                               # 已在 wm stub 定义；此处保持一致并加限定词
+    desc: "西药治疗西医病（Biolink:treats）"
+    domain: [DrugWestern, Procedure]
+    range: [DiseaseWM]
+    card: "n..n"
+    qualifiers: [evidence_grade, line_of_therapy]
+  WM_INDICATED_FOR:
+    desc: "适应证（说明书/指南层面；Biolink:treats_or_applied_or_studied_to_treat）"
+    domain: [DrugWestern]
+    range: [DiseaseWM, PhenotypicFeature]
+    card: "n..n"
+  WM_CONTRAINDICATED_FOR:
+    desc: "西药对某西医病/表型禁忌（Biolink:contraindicated_in）。与 tcm.CONTRAINDICATED_IN(→PatientFactor) 区分"
+    domain: [DrugWestern]
+    range: [DiseaseWM, PhenotypicFeature]
+    card: "n..n"
+    qualifiers: [severity, effect_description, evidence_grade, mechanism, clinical_consequence, reversibility, frequency, population_risk, sample_size, blinding, multicenter, bias_risk]
+  WM_HAS_ADVERSE_EFFECT:
+    desc: "药物不良反应（Biolink:has_adverse_event / causes）"
+    domain: [DrugWestern, MolecularEntity]
+    range: [PhenotypicFeature, DiseaseWM]
+    card: "n..n"
+    qualifiers: [frequency, severity]
+  # ── 西药-西药相互作用（DDI）──
+  DDI:
+    desc: "西药-西药相互作用，asymmetric——触发方(domain) 影响 被作用方(range) 的药代/药效"
+    domain: [DrugWestern]
+    range: [DrugWestern]
+    card: "n..n"
+    qualifiers: [severity, interaction_type, effect_description, evidence_grade, mechanism, clinical_consequence, reversibility, frequency, population_risk, sample_size, blinding, multicenter, bias_risk]
+
+
+  # ── 疾病-表型/解剖/共病 ──
+  HAS_PHENOTYPE:                           # 已在 wm stub 定义；扩展 domain
+    desc: "西医病/暴露的表型（Biolink:has_phenotype）"
+    domain: [DiseaseWM, Exposure]
+    range: [PhenotypicFeature]
+    card: "n..n"
+    qualifiers: [frequency]
+  DISEASE_LOCALIZES_TO:
+    desc: "疾病累及解剖部位（Biolink:disease_has_location）"
+    domain: [DiseaseWM]
+    range: [AnatomicalEntity]
+    card: "n..n"
+  WM_COMORBID_WITH:
+    desc: "共病/合并症（Biolink:associated_with；symmetric）"
+    domain: [DiseaseWM]
+    range: [DiseaseWM]
+    symmetric: true
+    card: "n..n"
+
+  # ── 分子机制（网络药理核心链：drug/compound → gene → pathway/process → disease）──
+  MOLECULARLY_TARGETS:
+    desc: "药物/成分作用于基因或蛋白靶点（Biolink:affects / molecularly_interacts_with）"
+    domain: [DrugWestern, MolecularEntity]
+    range: [Gene]
+    card: "n..n"
+    qualifiers: [action, affinity]          # action: agonist/antagonist/inhibitor/...
+  GENE_ASSOCIATED_WITH_DISEASE:
+    desc: "基因-疾病关联（Biolink:gene_associated_with_condition）"
+    domain: [Gene]
+    range: [DiseaseWM]
+    card: "n..n"
+    qualifiers: [direction, score]
+  PARTICIPATES_IN_PATHWAY:
+    desc: "基因/蛋白参与通路（Biolink:participates_in）"
+    domain: [Gene, MolecularEntity]
+    range: [Pathway]
+    card: "n..n"
+  HAS_GO_PROCESS:
+    desc: "基因→GO 生物学过程（Biolink:actively_involved_in）"
+    domain: [Gene]
+    range: [BiologicalProcess]
+    card: "n..n"
+  HAS_GO_FUNCTION:
+    desc: "基因→GO 分子功能（Biolink:enables）"
+    domain: [Gene]
+    range: [MolecularFunction]
+    card: "n..n"
+  HAS_GO_COMPONENT:
+    desc: "基因→GO 细胞组分（Biolink:located_in）"
+    domain: [Gene]
+    range: [CellularComponent]
+    card: "n..n"
+  GENE_EXPRESSED_IN:
+    desc: "基因在解剖部位表达（Biolink:expressed_in）"
+    domain: [Gene]
+    range: [AnatomicalEntity]
+    card: "n..n"
+  GENE_INTERACTS_GENE:
+    desc: "蛋白-蛋白/基因-基因互作（PPI；Biolink:interacts_with；symmetric）"
+    domain: [Gene]
+    range: [Gene]
+    symmetric: true
+    card: "n..n"
+
+  # ── 暴露 / 诊断 ──
+  EXPOSURE_ASSOCIATED_WITH:
+    desc: "暴露-疾病/基因关联（Biolink:associated_with）"
+    domain: [Exposure]
+    range: [DiseaseWM, Gene]
+    card: "n..n"
+  DIAGNOSED_BY:
+    desc: "疾病由检验/操作确诊（Biolink:diagnosed_by）"
+    domain: [DiseaseWM]
+    range: [LabTest, Procedure]
+    card: "n..n"
+  MEASURES:
+    desc: "检验项测量某基因/分子（生物标志物）（Biolink:measures）"
+    domain: [LabTest]
+    range: [Gene, MolecularEntity, PhenotypicFeature]
+    card: "n..n"
+
+canonical_vocabularies:
+  icd11:
+    desc: "WHO ICD-11（主体 + 传统医学模块）"
+    license: cc-by-nd
+    usage_scope: commercial
+    code_field: icd_code
+  atc:
+    desc: "ATC 药物分类（KEGG BRITE br08303 镜像）"
+    license: gov-fact
+    usage_scope: commercial
+    code_field: atc_code
+  hpo:
+    desc: "Human Phenotype Ontology"
+    license: hpo-custom          # HPO 许可对研究/多数商用友好；商用前法务复核
+    usage_scope: commercial
+    code_field: hpo_id
+  loinc:
+    desc: "LOINC 检验编码"
+    license: loinc-license        # 需接受 LOINC 使用条款
+    usage_scope: commercial
+    code_field: loinc_code
+  # 说明：PrimeKG 本体源（MONDO/DOID/GO/UBERON/Reactome/DrugBank）各自许可差异大，
+  #       DrugBank 学术版 CC-BY-NC-4.0（非商用！），入图前必须过 license_gate（见 core.yaml）。
+  #       商用发布时以 ATC/ICD-11/OpenTargets(CC0)/HGNC 等干净源替换 DrugBank 专有字段。

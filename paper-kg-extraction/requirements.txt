@@ -1,0 +1,6 @@
+# 论文→中西医结合知识图谱 抽取包 依赖
+pyyaml>=6.0          # 读 schema
+openai>=1.0          # OpenAI 兼容 LLM 客户端（NVIDIA NIM / OpenRouter / vLLM 均走这个）
+python-dotenv>=1.0   # 读 .env
+zhconv>=1.4          # 繁→简归一（node_id 融合前提；缺了会退回内置字表，建议装）
+pytest>=7.0          # 跑冒烟测试

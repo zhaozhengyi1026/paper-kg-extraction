@@ -1,0 +1,362 @@
+# ============================================================================
+# 中医领域 tcm —— 辨证论治推理本体（承载自 KG_PRODUCTION_BLUEPRINT v2.0）
+# 证候/疾病/治法标准名与编码锚定国标 GB/T 16751.x / 15657（见 canonical_vocabularies）；
+# 证素只作"可计算合成层"(病位+病性)。闭类 enum 由 validator 从 schema 派生强制。
+# 共享的 Source/MedicalCase/ClinicalGuideline/Standard 与 EVIDENCED_BY/ALIAS_OF 在 core.yaml；
+# 西医 DiseaseWM/DrugWestern 在 wm.yaml（本文件的桥接关系引用之）。
+# ============================================================================
+domain: tcm
+
+entity_types:
+  # ===== A. 四诊采集层 =====
+  Symptom:
+    desc: "症状(患者自觉,如失眠/口苦)"
+    canonical_vocab: symptom_cacm1641
+    key_props: [aliases]
+  Sign:
+    desc: "体征(客观所见,如面色萎黄/形体消瘦)"
+    key_props: [aliases]
+  TongueSign:
+    desc: "舌象(舌质/舌色/舌形/舌态/苔色/苔质)"
+    key_props: [aspect]
+  PulseSign:
+    desc: "脉象(28脉:浮沉迟数虚实滑涩弦…)"
+    key_props: [aspect]
+  InquiryItem:
+    desc: "问诊项(十问:寒热/汗/头身/胸腹/二便/饮食口味/睡眠/情志/经带)"
+    key_props: [aliases]
+  Constitution:
+    desc: "体质(九种)"
+    canonical_vocab: constitution_zyyxh157
+    enum: [平和质, 气虚质, 阳虚质, 阴虚质, 痰湿质, 湿热质, 血瘀质, 气郁质, 特禀质]
+
+  # ===== B. 辨证核心层（证素=可计算合成层）=====
+  LocationElement:
+    desc: "病位证素(约29项;病所在的脏腑/经络/部位/层次/三焦分位/卫气营血分)"
+    enum: [心, 神, 肺, 脾, 肝, 肾, 胃, 胆, 小肠, 大肠, 膀胱, 胞宫, 胸膈, 少腹, 表, 半表半里, 经络, 肌肤, 筋骨, 咽喉,
+           三焦, 上焦, 中焦, 下焦, 脑,
+           卫分, 气分, 营分, 血分,
+           命门, 心包, 精室, 乳房]
+  NatureElement:
+    desc: "病性证素(53项生产闭类;覆盖邪正/虚实/寒热/气血津液/传变病理，后续以 GB/T 证候回测增补)"
+    enum: [风, 外风, 内风, 寒, 外寒, 内寒, 暑, 湿, 外湿, 内湿, 燥, 外燥, 内燥, 火, 外火,
+           热, 毒, 脓, 痰, 饮, 水停, 虫积, 食积, 气滞, 气郁, 气逆, 气闭, 气陷, 气脱,
+           气不固, 气虚, 血虚, 阴虚, 阳虚, 津亏, 精亏, 血瘀, 血热, 血寒, 血脱, 血不固,
+           阴盛, 阳盛, 阳亢, 阳浮, 阳越, 动风, 动血, 亡阳, 亡阴, 气乱, 瘀阻, 邪闭]
+  Syndrome:
+    desc: "证型/证候(肝郁脾虚等);可由证素合成"
+    canonical_vocab: gbt16751_2_syndrome
+    key_props: [aliases]
+  DiagnosticMethod:
+    desc: "辨证方法(纲领)"
+    enum: [八纲辨证, 脏腑辨证, 气血津液辨证, 六经辨证, 卫气营血辨证, 三焦辨证, 经络辨证, 病因辨证]
+  Pathomechanism:
+    desc: "病机(病因→病理演变,如肝郁化火/脾虚湿盛/木乘土)"
+    key_props: [aliases]
+  EtiologyFactor:
+    desc: "病因(六淫风寒暑湿燥火/七情/饮食劳逸/外伤/继发痰瘀)"
+    key_props: [aliases, category]
+
+  # ===== C. 疾病层（DiseaseWM 在 wm.yaml）=====
+  Disease:
+    desc: "中医病名(不寐/眩晕等)"
+    canonical_vocab: gbt16751_1_disease
+    key_props: [aliases, tcm_disease_code]
+  DiseasePhase:
+    desc: "病程分期/传变阶段(如太阳→阳明;卫→气→营→血)"
+    key_props: []
+
+  # ===== D. 论治层 =====
+  TreatmentPrinciple:
+    desc: "治法/治则(疏肝健脾等)"
+    canonical_vocab: gbt16751_3_therapy
+    key_props: [aliases]
+  TherapyMethod:
+    desc: "疗法(方药/针刺/艾灸/推拿/导引等内治外治)"
+    key_props: []
+  Formula:
+    desc: "方剂"
+    canonical_vocab: formula_list
+    key_props: [aliases, dynasty, source_text]
+  FormulaCategory:
+    desc: "方剂分类(解表/补益/和解等)"
+    key_props: []
+  PatentMedicine:
+    desc: "中成药"
+    canonical_vocab: cpm_list
+    key_props: [approval_no]
+  Herb:
+    desc: "中药材/饮片"
+    canonical_vocab: pharmacopoeia_herb_list
+    key_props: [pinyin, latin_name, aliases]
+  HerbProcessed:
+    desc: "炮制品(炙甘草/法半夏等)"
+    key_props: [base_herb, process]
+  Acupoint:
+    desc: "腧穴"
+    canonical_vocab: who_gbt_acupoint
+    key_props: [code, aliases, location, needling_depth, needling_direction, moxibustion_applicable]
+  AcupointCategory:
+    desc: "腧穴特定穴分类"
+    enum: [五输穴, 井穴, 荥穴, 输穴, 经穴, 合穴,
+           原穴, 络穴, 郄穴, 背俞穴, 募穴,
+           八会穴, 八脉交会穴, 下合穴, 交会穴]
+  Meridian:
+    desc: "经络"
+    key_props: [aliases]
+  Property:
+    desc: "四气(寒热温凉平)"
+    enum: [寒, 热, 温, 凉, 平, 微寒, 微温]
+  Flavor:
+    desc: "五味(酸苦甘辛咸淡涩)"
+    enum: [酸, 苦, 甘, 辛, 咸, 淡, 涩]
+  ChannelTropism:
+    desc: "归经"
+    key_props: []
+  Function:
+    desc: "功效(解表/清热/补气等)"
+    key_props: []
+  Toxicity:
+    desc: "毒性分级"
+    enum: [无毒, 小毒, 有毒, 大毒]
+
+  # ===== E. 安全层（DrugWestern 在 wm.yaml）=====
+  Contraindication:
+    desc: "禁忌/慎用"
+    key_props: []
+  PatientFactor:
+    desc: "患者因素(妊娠/体质/年龄/哺乳)"
+    key_props: []
+
+  # ===== F. 解剖定位层 =====
+  BodyStructure:
+    desc: "解剖部位/身体结构(骨伤/五官/外科病变定位，穴位解剖定位)"
+    key_props: [aliases]
+
+relation_types:
+  # ── 药性（闭类）──
+  HAS_PROPERTY: {domain: [Herb, HerbProcessed], range: [Property], card: "n..n"}
+  HAS_FLAVOR: {domain: [Herb, HerbProcessed], range: [Flavor], card: "n..n"}
+  HAS_CHANNEL_TROPISM: {domain: [Herb, HerbProcessed], range: [ChannelTropism, Meridian], card: "n..n"}
+  HAS_FUNCTION: {domain: [Herb, HerbProcessed, Formula, Flavor, Property], range: [Function], card: "n..n"}
+  HAS_TOXICITY: {domain: [Herb, HerbProcessed], range: [Toxicity], card: "0..1"}
+  PROCESSED_INTO: {domain: [Herb], range: [HerbProcessed], card: "n..n", qualifiers: [method]}
+  # ── 方剂结构 ──
+  CONTAINS: {domain: [Formula, PatentMedicine], range: [Herb, HerbProcessed], card: "n..n", qualifiers: [role, dosage]}
+  HAS_CATEGORY: {domain: [Formula], range: [FormulaCategory], card: "n..1"}
+  DERIVED_FROM: {domain: [Formula], range: [Formula], card: "n..n", qualifiers: [modification]}
+  EMBODIES: {domain: [Formula], range: [TreatmentPrinciple], card: "n..n"}
+  # ── 辨证链 ──
+  SUGGESTS_ELEMENT:                       # ★量化辨证主边：症/舌/脉/问诊 → 证素(带贡献度)
+    domain: [Symptom, Sign, TongueSign, PulseSign, InquiryItem, Flavor, Property]
+    range: [LocationElement, NatureElement]
+    card: "n..n"
+    qualifiers: [weight, specificity, polarity]
+  COMPOSED_OF:                            # ★证候 = 证素组合
+    domain: [Syndrome]
+    range: [LocationElement, NatureElement]
+    card: "n..n"
+    qualifiers: [necessity]
+  PRESENTS:
+    domain: [Syndrome]
+    range: [Symptom, Sign, TongueSign, PulseSign]
+    card: "n..n"
+    qualifiers: [typicality]
+  CAUSED_BY:
+    # 逆向临床因果：症/征/病/证/病机可由病因、病机或上游证病导致。
+    domain: [Syndrome, Pathomechanism, Disease, Symptom, Sign, TongueSign, PulseSign]
+    range: [EtiologyFactor, Pathomechanism, Syndrome, Disease]
+    card: "n..n"
+  LEADS_TO:                               # ★病机因果链(CoT 骨架)
+    # 正向因果链允许落到临床表现，避免把“败血攻心→言语颠狂”伪装成 PRESENTS。
+    domain: [EtiologyFactor, Pathomechanism, Syndrome, Disease]
+    range: [Pathomechanism, Syndrome, Disease, Symptom, Sign, TongueSign, PulseSign]
+    card: "n..n"
+    qualifiers: [condition]
+  DIFFERENTIATED_BY: {domain: [Syndrome], range: [DiagnosticMethod], card: "n..n"}
+  DISTINGUISHED_FROM:                     # ★类证鉴别
+    domain: [Syndrome]
+    range: [Syndrome]
+    card: "n..n"
+    symmetric: true
+    qualifiers: [key_points]
+  EXCLUDES:
+    domain: [Syndrome, Disease]
+    range: [Symptom, Sign, PulseSign, TongueSign]
+    qualifiers: [strength]
+    description: "证候排除特征：无此症状可排除该证候"
+  COMMONLY_CONFUSED_WITH:
+    domain: [Herb, Formula, Syndrome]
+    range: [Herb, Formula, Syndrome]
+    symmetric: true
+    qualifiers: [key_difference]
+    description: "常见混淆对及鉴别要点"
+  COMBINED_WITH:
+    domain: [Syndrome]
+    range: [Syndrome]
+    symmetric: true
+    qualifiers: [frequency]
+    description: "证候兼夹关系"
+  EVOLVES_TO:
+    domain: [Syndrome, DiseasePhase]
+    range: [Syndrome, DiseasePhase]
+    qualifiers: [condition, mechanism]
+    description: "证候演变路径"
+  MANIFESTS_AS:
+    domain: [Disease]
+    range: [Syndrome, Symptom, Sign, TongueSign, PulseSign]
+    card: "n..n"
+    qualifiers: [frequency]
+  HAS_PHASE: {domain: [Disease], range: [DiseasePhase], card: "n..n"}
+  # ── 论治链 ──
+  TREATED_BY_PRINCIPLE: {domain: [Syndrome, Disease], range: [TreatmentPrinciple], card: "n..n"}
+  REALIZED_BY: {domain: [TreatmentPrinciple], range: [Formula, TherapyMethod], card: "n..n"}
+  CORRESPONDS_TO:                         # ★方证对应(论治主边)
+    domain: [Formula]
+    range: [Syndrome]
+    card: "n..n"
+    qualifiers: [indication, source, circumstance]
+  RECOMMENDED_FORMULA:
+    domain: [Disease, Syndrome]
+    range: [Formula]
+    card: "n..n"
+    qualifiers: [evidence_grade, strength]
+  MODIFIES:                               # ★随证加减
+    domain: [Formula]
+    range: [Herb, HerbProcessed]
+    card: "n..n"
+    qualifiers: [trigger_element, trigger_symptom, action, dosage]
+  TARGETS_ELEMENT:                        # ★药效靶证素(闭类→证素)
+    domain: [Herb, HerbProcessed, Function]
+    range: [LocationElement, NatureElement]
+    card: "n..n"
+  TREATS: {domain: [Herb, HerbProcessed, Formula, PatentMedicine, Acupoint, TherapyMethod], range: [Disease, DiseaseWM, Syndrome, Symptom], card: "n..n"}
+  RECOMMENDED_BY_GUIDELINE:
+    domain: [Disease, Syndrome]
+    range: [Formula, TreatmentPrinciple]
+    card: "n..n"
+    qualifiers: [evidence_grade]
+  # ── 针灸/经络 ──
+  LOCATED_ON: {domain: [Acupoint], range: [Meridian, BodyStructure], card: "n..n"}
+  INDICATED_FOR: {domain: [Acupoint, TherapyMethod], range: [Disease, Symptom, Syndrome], card: "n..n"}
+  USES: {domain: [TherapyMethod], range: [Acupoint, Formula], card: "n..n"}
+  BELONGS_TO_CATEGORY:
+    domain: [Acupoint]
+    range: [AcupointCategory]
+    card: "n..n"
+    description: "穴位特定穴归类（如足三里→合穴+下合穴）"
+  PAIRS_WITH:
+    domain: [Acupoint]
+    range: [Acupoint]
+    symmetric: true
+    qualifiers: [indication, pair_name]
+    description: "穴位配伍（合谷+太冲=开四关、内关+公孙=主治胸腹）"
+  INTERSECTS:
+    domain: [Meridian]
+    range: [Meridian]
+    symmetric: true
+    qualifiers: [intersection_point]
+    description: "经络交会（足三阴经交会于三阴交）"
+  LOCATED_AT:
+    domain: [Acupoint, Disease, Symptom]
+    range: [BodyStructure]
+    card: "n..n"
+    description: "解剖部位定位：穴位位置、疾病好发部位、症状出现部位"
+  # ── 藏象/五行（哲学基础层）──
+  GENERATES:
+    domain: [LocationElement]
+    range: [LocationElement]
+    qualifiers: [five_phase]
+    description: "五行相生（脏腑层）：肾水生肝木、肝木生心火、心火生脾土、脾土生肺金、肺金生肾水"
+  RESTRAINS:
+    domain: [LocationElement]
+    range: [LocationElement]
+    qualifiers: [five_phase, pathological_variant]
+    description: "五行相克（脏腑层）：肝木克脾土等。pathological_variant 标注相乘(过克)/相侮(反克)"
+  INTERIOR_EXTERIOR_WITH:
+    domain: [LocationElement]
+    range: [LocationElement]
+    symmetric: true
+    description: "脏腑表里：心-小肠、肝-胆、脾-胃、肺-大肠、肾-膀胱、心包-三焦"
+  HAS_PHYSIOLOGICAL_FUNCTION:
+    domain: [LocationElement]
+    range: [Function]
+    card: "n..n"
+    description: "脏腑生理功能：肝主疏泄、脾主运化、肺主宣降、肾主藏精、心主血脉等"
+  # ── 体质 ──
+  CONSTITUTION_PREDISPOSES: {domain: [Constitution], range: [Syndrome, Disease], card: "n..n"}
+  # ── 安全 ──
+  INCOMPATIBLE_WITH:
+    domain: [Herb, HerbProcessed]
+    range: [Herb, HerbProcessed]
+    card: "n..n"
+    symmetric: true
+    qualifiers: [rule]
+  ANTAGONIZES:
+    domain: [Herb]
+    range: [Herb]
+    symmetric: true
+    qualifiers: [rule, severity]
+    description: "十九畏：两药合用降低药效，区别于INCOMPATIBLE_WITH的毒性增加"
+  POTENTIATES:
+    domain: [Herb]
+    range: [Herb]
+    qualifiers: [mechanism]
+    description: "相须相使：两药合用增强疗效"
+  REDUCES_TOXICITY:
+    domain: [Herb]
+    range: [Herb]
+    qualifiers: [mechanism]
+    description: "相杀相畏：一药能减轻另一药的毒性或副作用"
+  CONTRAINDICATED_IN: {domain: [Herb, HerbProcessed, Formula, TherapyMethod, Acupoint], range: [PatientFactor], card: "n..n"}
+  HAS_CONTRAINDICATION: {domain: [Herb, Formula], range: [Contraindication], card: "n..n"}
+  # ── 中西医桥接（range 引用 wm.yaml 的 DrugWestern/DiseaseWM）──
+  INTERACTS_WITH:
+    domain: [DrugWestern, Herb]
+    range: [DrugWestern, Herb]
+    card: "n..n"
+    symmetric: true
+    qualifiers: [severity, interaction_type, effect_description, evidence_grade, mechanism, clinical_consequence, reversibility, frequency, population_risk, sample_size, blinding, multicenter, bias_risk]
+  MAPS_TO_ICD: {domain: [Disease, DiseaseWM], range: [DiseaseWM], card: "n..n"}
+# ── 中药-中药相互作用（从论文提取，asymmetric 保留方向性）──
+  HHI:
+    desc: "中药-中药相互作用（配伍协同/拮抗/禁忌），asymmetric——触发方为 domain，被作用方为 range"
+    domain: [Herb, HerbProcessed]
+    range: [Herb, HerbProcessed]
+    card: "n..n"
+    qualifiers: [severity, interaction_type, effect_description, evidence_grade, mechanism, clinical_consequence, reversibility, frequency, population_risk, sample_size, blinding, multicenter, bias_risk, direction, formula_context]
+  MAPS_TO_ATC: {domain: [DrugWestern], range: [DrugWestern], card: "n..1"}
+
+# ── 规范词表（锚定国标；icd11/atc 在 wm.yaml）──
+canonical_vocabularies:
+  gbt16751_1_disease: {desc: "GB/T 16751.1-2023 疾病(1369)", license: gov-fact, usage_scope: commercial, code_field: tcm_disease_code}
+  gbt16751_2_syndrome: {desc: "GB/T 16751.2-2021 证候(2060,含406类目)", license: gov-fact, usage_scope: commercial, code_field: tcm_syndrome_code}
+  gbt16751_3_therapy: {desc: "GB/T 16751.3-2023 治法(1276)", license: gov-fact, usage_scope: commercial}
+  gbt15657_code: {desc: "GB/T 15657-2021 中医病证分类与代码", license: gov-fact, usage_scope: commercial, code_field: tcm_bzfl_code}
+  who_gbt_acupoint: {desc: "WHO 361穴标准 + GB/T 12346-2006 腧穴名称与定位", license: gov-fact, usage_scope: commercial, code_field: acupoint_code}
+  constitution_zyyxh157: {desc: "中医体质分类与判定 ZYYXH/T 157-2009", license: gov-fact, usage_scope: commercial}
+  pharmacopoeia_herb_list: {desc: "中药材标准名录(事实层)", license: gov-fact, usage_scope: commercial}
+  formula_list: {desc: "方剂规范名(公共领域方书+国标对齐)", license: public-domain, usage_scope: commercial}
+  cpm_list: {desc: "中成药规范名(批准文号事实层)", license: gov-fact, usage_scope: commercial}
+  symptom_cacm1641: {desc: "T/CACM 1641-2025 常见中医症状-HPO 对照表(症状标准化)", license: gov-fact, usage_scope: commercial, code_field: symptom_code}
+
+# ── 考纲覆盖映射（completeness 缺口报告用）──
+exam_coverage_map:
+  中药学: {entities: [Herb, Property, Flavor, ChannelTropism, Function, Toxicity], relations: [HAS_PROPERTY, HAS_FLAVOR, HAS_FUNCTION, HAS_CHANNEL_TROPISM]}
+  方剂学: {entities: [Formula, FormulaCategory, Herb], relations: [CONTAINS, EMBODIES, HAS_CATEGORY, DERIVED_FROM]}
+  中医诊断: {entities: [Syndrome, Symptom, Sign, TongueSign, PulseSign, LocationElement, NatureElement, DiagnosticMethod], relations: [PRESENTS, MANIFESTS_AS, SUGGESTS_ELEMENT, COMPOSED_OF, DIFFERENTIATED_BY, DISTINGUISHED_FROM, EXCLUDES, COMMONLY_CONFUSED_WITH, COMBINED_WITH, EVOLVES_TO]}
+  中医基础: {entities: [EtiologyFactor, Pathomechanism, Syndrome, LocationElement, NatureElement, Function], relations: [CAUSED_BY, LEADS_TO, EVOLVES_TO, GENERATES, RESTRAINS, INTERIOR_EXTERIOR_WITH, HAS_PHYSIOLOGICAL_FUNCTION]}
+  中医内科: {entities: [Disease, Syndrome, TreatmentPrinciple, Formula], relations: [MANIFESTS_AS, TREATED_BY_PRINCIPLE, RECOMMENDED_FORMULA, CORRESPONDS_TO, MODIFIES, COMBINED_WITH, EVOLVES_TO]}
+  针灸学: {entities: [Acupoint, Meridian, TherapyMethod, AcupointCategory, BodyStructure], relations: [LOCATED_ON, LOCATED_AT, INDICATED_FOR, USES, BELONGS_TO_CATEGORY, PAIRS_WITH, INTERSECTS]}
+  方药安全: {entities: [Herb, PatientFactor, Contraindication], relations: [INCOMPATIBLE_WITH, ANTAGONIZES, POTENTIATES, REDUCES_TOXICITY, CONTRAINDICATED_IN, INTERACTS_WITH]}
+  骨伤外科: {entities: [Disease, Syndrome, TherapyMethod, Formula, BodyStructure], relations: [MANIFESTS_AS, TREATED_BY_PRINCIPLE, LOCATED_AT, TREATS]}
+  五官科: {entities: [Disease, Syndrome, Formula, BodyStructure], relations: [MANIFESTS_AS, TREATED_BY_PRINCIPLE, LOCATED_AT]}
+  本草古籍: {entities: [Herb, Property, Flavor, ChannelTropism, Function, Toxicity, HerbProcessed], relations: [HAS_PROPERTY, HAS_FLAVOR, HAS_FUNCTION, HAS_CHANNEL_TROPISM, HAS_TOXICITY, PROCESSED_INTO, TREATS]}
+
+# ── 辨证链质量专项闸（quality 阶段在 7 闸之外按此查辨证可推理性）──
+reasoning_chain_gates:
+  syndrome_has_element_pct: 0.90        # ≥90% 常见证有证素签名(COMPOSED_OF)
+  symptom_has_element_pct: 0.95         # ≥95% 常见症连到证素带权重(SUGGESTS_ELEMENT)
+  syndrome_has_formula_pct: 0.90        # ≥90% 常见证有方证对应(CORRESPONDS_TO)
+  element_weight_normalized: true
+  differential_pairs_min: 1             # 每常见证 ≥1 条鉴别(DISTINGUISHED_FROM)

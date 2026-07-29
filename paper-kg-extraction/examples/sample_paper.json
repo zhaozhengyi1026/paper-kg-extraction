@@ -1,0 +1,24 @@
+{
+  "pmcid": "PMC10123456",
+  "pmid": "38765432",
+  "doi": "10.1000/example.2026.001",
+  "title": "Astragaloside IV ameliorates diabetic nephropathy via the TGF-β1/Smad3 pathway",
+  "journal": "Journal of Ethnopharmacology",
+  "license": "cc-by",
+  "evidence_level": "4",
+  "abstract": "Diabetic nephropathy is a leading cause of end-stage renal disease. Astragaloside IV, the major active constituent of Astragalus membranaceus, ameliorated renal fibrosis in diabetic nephropathy by inhibiting the TGF-β1/Smad3 signaling pathway. These findings support the use of Astragalus in integrative management of diabetic kidney disease.",
+  "sections": [
+    {
+      "title": "Introduction",
+      "text": "Diabetic nephropathy affects roughly 40% of patients with diabetes. Previous reports have suggested that renin-angiotensin system inhibitors slow progression, but residual risk remains high. Traditional Chinese medicine has long used Astragalus membranaceus for edema and proteinuria."
+    },
+    {
+      "title": "Results",
+      "text": "Astragaloside IV, the major active constituent of Astragalus membranaceus, ameliorated renal fibrosis in diabetic nephropathy by inhibiting the TGF-β1/Smad3 signaling pathway. Treatment with Astragaloside IV significantly reduced proteinuria compared with the model group. Network pharmacology analysis further identified Nrf2 as a key target of Astragaloside IV in oxidative stress."
+    },
+    {
+      "title": "Discussion",
+      "text": "Our data indicate that Astragaloside IV exerts renoprotective effects. When combined with standard ACE inhibitor therapy, Astragalus-based formulas may complement western treatment by reducing fibrosis. Further randomized trials are warranted."
+    }
+  ]
+}

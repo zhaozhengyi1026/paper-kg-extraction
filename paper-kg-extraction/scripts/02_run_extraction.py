@@ -1,0 +1,335 @@
+# -*- coding: utf-8 -*-
+"""端到端抽取：读论文语料 → 逐篇抽取 → 写 out/candidate_kg/paper_triples.jsonl。
+
+两种输入源（--from）：
+  db    ：med-paper-collector 的 SQLite（默认路径见 --db；读 pmc_fulltext + papers 元数据）
+  json  ：一个 JSON/JSONL 文件或目录，每篇论文一条（examples/sample_paper.json 的格式）
+
+用法示例：
+  # 离线冒烟（无需 API key，用示例论文 + mock 抽取）
+  python scripts/02_run_extraction.py --from json --input examples/sample_paper.json --mock
+
+  # 真跑：从采集库取带全文的论文，用配置好的 LLM 抽取，限 200 篇
+  python scripts/02_run_extraction.py --from db --db /path/to/papers.db --limit 200
+
+  # 指定采集批次（写入每条边的 provenance.paper_batch_id）
+  python scripts/02_run_extraction.py --from db --limit 500 --batch-id batch:pmc_oa:20260703:q8f3a1c2
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sqlite3
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "src"))
+
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
+from extract import extract_paper, new_run_id  # noqa: E402
+from llm_client import LLMClient  # noqa: E402
+from schema_loader import Schema  # noqa: E402
+from interaction_credibility import batch_enrich  # noqa: E402
+
+try:
+    from tqdm import tqdm
+    HAS_TQDM = True
+except ImportError:
+    HAS_TQDM = False
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv(ROOT / ".env")
+except ImportError:
+    pass
+
+
+def papers_from_db(db_path: str, limit: int, batch_id: str):
+    """从 med-paper-collector 库读带全文的论文，联 papers 元数据补 evidence_level/license/authority。"""
+    con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row
+    q = """
+      SELECT f.pmcid, f.pmid, f.doi, f.title, f.abstract, f.sections, f.license AS f_lic,
+             p.evidence_level, p.journal_tier, p.license AS p_lic, p.pub_types, p.journal,
+             p.authority_tier, p.authority_score
+      FROM pmc_fulltext f
+      LEFT JOIN papers p ON p.pmcid = f.pmcid
+      WHERE f.sections IS NOT NULL AND f.sections != '' AND f.sections != '[]'
+      LIMIT ?"""
+    for r in con.execute(q, (limit,)):
+        try:
+            sections = json.loads(r["sections"]) if r["sections"] else []
+        except json.JSONDecodeError:
+            sections = []
+        yield {
+            "pmcid": r["pmcid"], "pmid": r["pmid"], "doi": r["doi"],
+            "title": r["title"], "abstract": r["abstract"] or "",
+            "sections": sections,
+            "license": (r["f_lic"] or r["p_lic"] or "").lower(),
+            "evidence_level": r["evidence_level"] or "",
+            "journal": r["journal"] or "",
+            "authority_tier": r["authority_tier"] or "",
+            "authority_score": r["authority_score"] or 0,
+            "paper_cebm_level": r["evidence_level"] or "",
+            "paper_batch_id": batch_id,
+        }
+    con.close()
+
+
+def papers_from_json(path: str, batch_id: str):
+    p = Path(path)
+    files = sorted(p.glob("*.json*")) if p.is_dir() else [p]
+    for fp in files:
+        txt = fp.read_text(encoding="utf-8").strip()
+        docs = []
+        if fp.suffix == ".jsonl" or "\n{" in txt:
+            for line in txt.splitlines():
+                line = line.strip()
+                if line:
+                    docs.append(json.loads(line))
+        else:
+            obj = json.loads(txt)
+            docs = obj if isinstance(obj, list) else [obj]
+        for d in docs:
+            d.setdefault("paper_batch_id", batch_id)
+            yield d
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--from", dest="src", choices=["db", "json"], required=True)
+    ap.add_argument("--db", default=str(ROOT / "data" / "papers.db"),
+                    help="med-paper-collector 的 SQLite 路径")
+    ap.add_argument("--input", help="--from json 时的文件/目录")
+    ap.add_argument("--out", default=str(ROOT / "out" / "candidate_kg" / "paper_triples.jsonl"))
+    ap.add_argument("--limit", type=int, default=100)
+    ap.add_argument("--batch-id", default="batch:local:00000000:manual")
+    ap.add_argument("--mock", action="store_true", help="离线确定性抽取（无需 API key，仅冒烟）")
+    ap.add_argument("--no-resume", action="store_true", help="不续跑：即使输出文件已存在也重新抽取全部")
+    args = ap.parse_args()
+
+    schema = Schema()
+    llm = LLMClient(mock=args.mock)
+    run_id = new_run_id()
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if args.src == "db":
+        papers = papers_from_db(args.db, args.limit, args.batch_id)
+    else:
+        if not args.input:
+            ap.error("--from json 需要 --input")
+        papers = papers_from_json(args.input, args.batch_id)
+
+    stats: dict = {}
+    n_papers = n_edges = n_rejects = n_warnings = 0
+    all_rejects: list = []
+    all_warnings: list = []
+    rejects_path = out_path.parent / (out_path.stem + "_rejects.jsonl")
+    warns_path = out_path.parent / (out_path.stem + "_warnings.jsonl")
+
+    # Count papers for progress display
+    if args.src == "json" and args.input:
+        inp = Path(args.input)
+        total = len(sorted(inp.glob("*.json*"))) if inp.is_dir() else 1
+    else:
+        total = args.limit
+
+    # Resume: read existing output to skip already-processed papers
+    seen_ids = set()
+    global_edge_ids: set[str] = set()  # 跨运行全局去重
+    errored_ids = set()  # 有 LLM 错误的论文，续跑时强制重处理
+    if not args.no_resume and out_path.exists():
+        try:
+            for line in out_path.read_text(encoding="utf-8").strip().splitlines():
+                if not line.strip():
+                    continue
+                obj = json.loads(line)
+                sid = obj.get("evidence_source_id") or obj.get("provenance", {}).get("source_id", "")
+                if sid:
+                    seen_ids.add(sid)
+                eid = obj.get("edge_id", "")
+                if eid:
+                    global_edge_ids.add(eid)
+        except Exception:
+            pass
+        # 读 rejects 文件：LLM 错误的论文下次续跑时重处理
+        if rejects_path.exists():
+            try:
+                for line in rejects_path.read_text(encoding="utf-8").strip().splitlines():
+                    if not line.strip():
+                        continue
+                    rj = json.loads(line)
+                    if rj.get("reject_reason") == "llm_error":
+                        sid = rj.get("source_id", "")
+                        if sid:
+                            errored_ids.add(sid)
+            except Exception:
+                pass
+
+    # 清除有 LLM 错误的论文的 seen 状态（让它们重新处理）
+    force_retry = seen_ids & errored_ids
+    if force_retry:
+        seen_ids -= force_retry
+        print(f"断点续跑: {len(force_retry)} 篇之前 LLM 出错，将重新处理",
+              file=sys.stderr, flush=True)
+
+    if seen_ids:
+        print(f"断点续跑: 跳过已处理的 {len(seen_ids)} 篇论文", file=sys.stderr, flush=True)
+
+    remaining = total - len(seen_ids)
+    print()
+    print(f"加载 {total} 篇论文，待抽取 {remaining} 篇，开始…", file=sys.stderr, flush=True)
+
+    open_mode = "a" if (seen_ids and not args.no_resume) else "w"
+    # 新跑清空旧 rejects，续跑追加
+    if open_mode == "w" and rejects_path.exists():
+        rejects_path.unlink()
+
+    # ── 进度条 ──
+    if HAS_TQDM:
+        pbar = tqdm(
+            total=total,
+            desc="🔬 抽取中",
+            unit="篇",
+            bar_format="{desc:35.35}{percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]",
+            file=sys.stderr,
+        )
+    else:
+        pbar = None
+
+    with out_path.open(open_mode, encoding="utf-8") as fout:
+        pi = 0
+        for paper in papers:
+            sid = paper.get("source_id") or paper.get("pmid") or paper.get("pmcid") or paper.get("doi", "")
+
+            # 跳过已处理的
+            if sid and sid in seen_ids:
+                if pbar:
+                    pbar.update(1)
+                    pbar.set_postfix_str(f"⏭ 跳过(已处理)", refresh=True)
+                continue
+
+            n_papers += 1
+            pi += 1
+            # PMCID/PMID 标识 + 标题（智能截断到单词边界）
+            sid = paper.get("pmcid") or paper.get("pmid") or paper.get("doi") or ""
+            if sid:
+                sid_short = sid[:15]  # PMCID最多15字符
+            else:
+                sid_short = "?"
+
+            raw_title = (paper.get("title") or "Unknown").strip()
+            max_title_len = 30  # 留给标题的空间（sid已占~16字符）
+            if len(raw_title) > max_title_len:
+                cut = max_title_len - 3
+                space_idx = raw_title.rfind(" ", 0, cut + 3)
+                title = raw_title[:space_idx if space_idx > max_title_len - 8 else cut].rstrip(" ,;:.") + "…"
+            else:
+                title = raw_title
+
+            # 更新进度条描述
+            if pbar:
+                pbar.set_description_str(f"{sid_short} | {title}", refresh=True)
+
+            paper_rejects: list = []
+            paper_warns: list = []
+            edges = extract_paper(paper, schema, llm, run_id, stats,
+                                  paper_rejects, paper_warns)
+
+            # 写出拒绝记录
+            if paper_rejects:
+                n_rejects += len(paper_rejects)
+                all_rejects.extend(paper_rejects)
+                with rejects_path.open("a", encoding="utf-8") as fr:
+                    for rj in paper_rejects:
+                        fr.write(json.dumps(rj, ensure_ascii=False) + "\n")
+
+            # 写出软警告记录（negation 等，三元组已接受）
+            if paper_warns:
+                n_warnings += len(paper_warns)
+                all_warnings.extend(paper_warns)
+                with warns_path.open("a", encoding="utf-8") as fw:
+                    for w in paper_warns:
+                        fw.write(json.dumps(w, ensure_ascii=False) + "\n")
+
+            # ICS v2.0 增强：用论文权威度 + CEBM 等级给交互三元组打分
+            auth_tier = paper.get("authority_tier", "") or ""
+            auth_score = paper.get("authority_score", 0) or 0
+            paper_cebm = paper.get("paper_cebm_level", "") or paper.get("evidence_level", "") or ""
+            edges = batch_enrich(edges, auth_tier, auth_score, paper_cebm)
+
+            # 全局去重：跳过已存在于输出文件的 edge_id（不同批次、不同时间跑）
+            new_edges = []
+            dup_global = 0
+            for e in edges:
+                eid = e.get("edge_id", "")
+                if eid and eid in global_edge_ids:
+                    dup_global += 1
+                    continue
+                global_edge_ids.add(eid)
+                new_edges.append(e)
+            if dup_global:
+                stats["dup_global"] = stats.get("dup_global", 0) + dup_global
+                print(f"      SKIP {dup_global} 条全局重复", file=sys.stderr, flush=True)
+
+            for e in new_edges:
+                fout.write(json.dumps(e, ensure_ascii=False) + "\n")
+            n_edges += len(new_edges)
+
+            if pbar:
+                pbar.update(1)
+                pbar.set_postfix({
+                    "边": n_edges,
+                    "接受": stats.get("accepted", 0),
+                    "拒": n_rejects,
+                    "警": n_warnings,
+                    "错": stats.get("llm_error", 0),
+                }, refresh=True)
+            else:
+                suffix = "" if len(edges) > 0 else " (论文无有效三元组)"
+                print(f"[{pi}/{remaining}] {title} -> {len(edges)} 边 (累计 {n_edges}){suffix}",
+                      file=sys.stderr, flush=True)
+
+            fout.flush()
+            if n_papers % 20 == 0 and not pbar:
+                print(f"  …{n_papers} 篇 / {n_edges} 边（accepted={stats.get('accepted',0)}）",
+                      file=sys.stderr)
+
+    if pbar:
+        pbar.close()
+
+    # ── 拒因统计 ──
+    from collections import Counter
+    reject_reasons = Counter(r["reject_reason"] for r in all_rejects)
+
+    report = {"run_id": run_id, "papers": n_papers, "edges_written": n_edges,
+              "rejects_total": n_rejects,
+              "warnings_total": n_warnings,
+              "reject_reasons": dict(reject_reasons),
+              "schema_version": schema.schema_version, "reject_stats": stats}
+    rep_path = out_path.parent / "extraction_report.json"
+    rep_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+
+    print(f"\n{'='*55}")
+    print(f"✓ 写出 {n_edges} 条候选边 → {out_path}")
+    print(f"✗ 拒绝 {n_rejects} 条三元组 → {rejects_path}")
+    if n_warnings:
+        print(f"⚠ 软警告 {n_warnings} 条 (三元组已接受，需审计) → {warns_path}")
+    if reject_reasons:
+        print(f"\n  拒因分布:")
+        for reason, count in reject_reasons.most_common():
+            pct = count / n_rejects * 100 if n_rejects else 0
+            print(f"    {reason}: {count} 条 ({pct:.1f}%)")
+    print(f"  报告 → {rep_path}")
+
+
+if __name__ == "__main__":
+    main()

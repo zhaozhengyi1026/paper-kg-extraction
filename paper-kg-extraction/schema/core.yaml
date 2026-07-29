@@ -1,0 +1,94 @@
+# ============================================================================
+# 核心本体层 core —— 跨领域共享的上层定义（meta + provenance + 置信/分级 + 通用属性）
+# 所有领域(tcm/wm/…)合并时以本文件为骨架；领域模块只加各自的实体/关系。
+# 设计依据：../../docs/reference/02_ONTOLOGY.md（多领域分层）；承载自 KG_PRODUCTION_BLUEPRINT v2.0。
+# ============================================================================
+schema_version: "2.1.0"
+namespace: med
+id_strategy: "node_id = sha256('node'+normalize_name(canonical_name)+type); edge_id = sha256(relation+head_id+tail_id)"
+
+# ── 跨领域共享实体（证据/治理）────────────────────────────────────────────
+entity_types:
+  Source:
+    desc: "文献/古籍出处(provenance 实体)"
+    key_props: [dynasty, author]
+  MedicalCase:
+    desc: "医案(古代/名老中医/真实世界;承载 症-证-法-方 链与频次)"
+    key_props: [source, dynasty, author, deidentified]
+  ClinicalGuideline:
+    desc: "诊疗指南/共识(循证推荐+证据级别)"
+    key_props: [issuer, year, evidence_system]
+  Standard:
+    desc: "标准(GB/T 术语/分类编码/药典名录/ISO)"
+    key_props: [code, issuer]
+
+# ── 跨领域共享关系 ────────────────────────────────────────────────────────
+relation_types:
+  EVIDENCED_BY:
+    desc: "统一 provenance：任意节点/边 → 来源(古籍/医案/指南/标准)"
+    domain: ["*"]
+    range: [Source, MedicalCase, ClinicalGuideline, Standard]
+    card: "n..n"
+  MENTIONED_IN:
+    desc: "提及出处(EVIDENCED_BY 的轻量特例，向后兼容)"
+    domain: ["*"]
+    range: [Source]
+    card: "n..n"
+  ALIAS_OF:
+    desc: "同类型别名归一"
+    domain: ["*"]
+    range: ["*"]
+    card: "n..1"
+
+# ── 节点/边通用属性（每条记录必带 required；domain/evidence_tier 为通用可选）──
+node_properties:
+  required: [node_id, canonical_name, type, license, kg_version, status]
+  optional: [domain, aliases, pinyin, std_code, properties, confidence, evidence_tier, source_ids, created_at, updated_at]
+edge_properties:
+  required: [edge_id, head_id, tail_id, relation, evidence_chunk_id, license, kg_version, extraction_method, status]
+  optional: [domain, evidence_sentence, evidence_source_id, evidence_tier, usage_scope, allowed_use, qualifiers, confidence, crosscheck,
+             reviewed, semantic_repairs, evidence_count, source_ids, head_surface, tail_surface,
+             evidence_subject_source]
+
+# ── 抽取方法 / 证据分级 / 置信模型 ────────────────────────────────────────
+extraction_methods: [teacher_llm, deterministic, curated, gov_fact, classic_rule, external_kg, completion, case_calibrated]
+evidence_tiers: [A, B, C, D]          # A 权威标准 / B 公共领域经典 / C 真实世界·标注 / D 仅校验(不入图)
+evidence_tier_map:                    # license → 默认 evidence_tier（builder 写边据此填，可覆盖）
+  gov-fact: A
+  us-gov-public: A
+  cc-by-nd: A
+  public-domain: B
+  cc-by: C
+  cc-by-sa: C
+  cc0: C
+  mit: C
+  apache-2.0: C
+confidence_model:
+  base:
+    teacher_llm: 0.6
+    deterministic: 0.4
+    gov_fact: 0.95
+    classic_rule: 0.99
+    curated: 1.0
+    external_kg: 0.8
+    completion: 0.5
+    case_calibrated: 0.7
+  tier_factor:                        # 与 base 相乘；D=0 表示不入图
+    A: 1.0
+    B: 0.85
+    C: 0.9
+    D: 0.0
+  evidence_bonus: 0.1                  # 每多一条独立 evidence +0.1（封顶 0.99）
+  conflict_penalty: -0.3              # 与已有边矛盾时降权并打 _conflict
+
+status_lifecycle: [candidate, active, deprecated, rejected]
+
+# ── 扩展规则（开放世界，动态多领域）──────────────────────────────────────
+extensibility:
+  - 新增领域：在 registry.yaml.domains.active 加领域名 + 提供 <domain>.yaml（entity_types/relation_types/canonical_vocabularies），无需改代码。
+  - 新增实体/关系：在对应领域文件登记；schema_version 语义化升级；已有图谱不动，增量按新版本号入库。
+  - 闭类关系自动识别：关系 range 指向带 enum 的实体类型即闭类，tail 必须落在这些 enum 的并集内（validator 从合并后 schema 派生）。
+  - 关系特异信息走 qualifiers 键值袋，避免关系类型爆炸。
+  - 别名/异名经 ALIAS_OF + canonical_vocab 归一；标准名/编码以各领域 canonical_vocabularies 登记的权威源为准。
+  - 增量入库 append + edge_id 去重；弃用走 status=deprecated 不物理删除。
+  - 新数据源先在 pipeline.yaml.data_sources 登记 license + usage_scope，过 license_gate 方可入图；非商用/研究受限源隔离不入图。

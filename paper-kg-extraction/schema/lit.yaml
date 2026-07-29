@@ -1,0 +1,94 @@
+# ============================================================================
+# 文献循证域 lit —— 把 PubMed / PMC-OA / EuropePMC / ClinicalTrials 文献
+#                    建成一级可查询的 provenance 实体，并承载证据分级【提案版 v1.0】
+#
+# 与 core.yaml 的关系：
+#   core 已有 Source / MedicalCase / ClinicalGuideline / Standard + EVIDENCED_BY / MENTIONED_IN。
+#   古籍/教科书走 Source；本域新增**期刊论文 / 临床试验**两类现代循证 provenance 实体，
+#   并新增指向它们的关系（EVIDENCED_BY 的 range 在 core，跨域无法扩展，故用独立关系名）。
+#
+# 细粒度溯源：三元组"来源于哪批论文-哪篇-哪章-哪段-哪句"由**边属性**承载
+#   （evidence_chunk_id / evidence_source_id / chapter_path 已在 core.edge_properties；
+#    本域在设计文档 §6 规定的 paper 专用可选边属性做扩展）。JournalArticle 节点使这些
+#   引用可被反查（"这条边有哪些论文支持""这篇论文贡献了哪些三元组"）。
+# ============================================================================
+domain: lit
+
+entity_types:
+  JournalArticle:
+    desc: "期刊论文（PubMed/PMC-OA/EuropePMC 一条 = 一个节点）"
+    canonical_vocab: pmid_ns
+    key_props: [pmid, pmcid, doi, journal, pub_date, pub_types, mesh_terms,
+                evidence_level, journal_tier, license, oa_status]
+  ClinicalTrialRecord:
+    desc: "临床试验登记记录（ClinicalTrials.gov / ICTRP）"
+    canonical_vocab: nct_ns
+    key_props: [nct_id, phase, status, study_type, enrollment, start_date, completion_date]
+  EvidenceStatement:
+    desc: "可选：从论文抽出的一条'循证论断'节点（PICO 化的结论），用于聚合同类证据与冲突裁决"
+    key_props: [claim, population, intervention, comparator, outcome, direction, effect_size]
+
+relation_types:
+  # ── 任意节点/边 → 文献（provenance 反查主边）──
+  SUPPORTED_BY_LITERATURE:
+    desc: "实体/证候链/桥边 由 现代文献支持（EVIDENCED_BY 的文献特例；range 指向本域实体）"
+    domain: ["*"]
+    range: [JournalArticle, ClinicalTrialRecord, EvidenceStatement]
+    card: "n..n"
+    qualifiers: [section, para_index, evidence_level, stance]  # stance: 支持/反对/不确定
+  # ── 论文断言了某事实（正向视图，便于"某论文贡献了哪些三元组"）──
+  REPORTS:
+    desc: "论文/试验 报告 某循证论断"
+    domain: [JournalArticle, ClinicalTrialRecord]
+    range: [EvidenceStatement]
+    card: "n..n"
+  STUDIES:
+    desc: "试验/论文 研究 某干预对某疾病/证候（PICO 的 I×P）"
+    domain: [JournalArticle, ClinicalTrialRecord]
+    range: [DiseaseWM, Disease, Syndrome, DrugWestern, Formula, PatentMedicine, Herb]
+    card: "n..n"
+    qualifiers: [role]                  # role: population/intervention/comparator/outcome
+  CITES:
+    desc: "论文引用论文（可选，供证据网络/时效分析）"
+    domain: [JournalArticle]
+    range: [JournalArticle]
+    card: "n..n"
+  # ── 证据聚合与冲突（供质量层裁决）──
+  CORROBORATES:
+    desc: "论断 相互印证（同向证据；symmetric）"
+    domain: [EvidenceStatement]
+    range: [EvidenceStatement]
+    symmetric: true
+  CONTRADICTS:
+    desc: "论断 相互矛盾（反向证据；symmetric，触发冲突降权而非删除）"
+    domain: [EvidenceStatement]
+    range: [EvidenceStatement]
+    symmetric: true
+
+canonical_vocabularies:
+  pmid_ns:
+    desc: "PubMed/PMC 标识命名空间（pmid: / pmc: / doi:）"
+    license: us-gov-public          # PubMed 元数据为美国政府公共领域；全文许可随各文 license 字段
+    usage_scope: commercial
+    code_field: pmid
+  nct_ns:
+    desc: "ClinicalTrials.gov 登记号命名空间"
+    license: us-gov-public
+    usage_scope: commercial
+    code_field: nct_id
+  oxford_cebm:
+    desc: "Oxford CEBM 证据等级（1a/1b/2a/2b/3a/3b/4/5）—— med-paper-collector/evidence_grader.py 已产出"
+    license: public-domain
+    usage_scope: commercial
+
+# ── 文献证据分级 → evidence_tier 映射（覆盖 core.evidence_tier_map，用于按证据强度定置信）──
+# 现代文献的 tier 不看 license 而看研究设计：SR/Meta/RCT 高，个案/机制研究低。
+literature_tier_map:
+  "1a": A    # 系统评价/Meta（RCT）
+  "1b": A    # 单个高质量 RCT
+  "2a": B    # SR of cohort
+  "2b": B    # 单个 cohort / 低质量 RCT
+  "3a": B    # SR of case-control
+  "3b": C    # 单个 case-control
+  "4":  C    # 病例系列 / 低质量队列
+  "5":  D    # 机制研究 / 专家意见（仅校验，默认不直接升级为 active 结论边）
