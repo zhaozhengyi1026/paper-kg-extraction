@@ -1,0 +1,146 @@
+# paper-kg-extraction
+
+> 从生物医学论文中抽取中西医结合知识图谱三元组，v5.1。
+
+## 架构
+
+```
+论文 (PubMed/PMC OA)
+  → 语义单元切分 (1200 char/unit)
+  → LLM 抽取三元组 (deepseek-v4-pro)
+  → 10 道校验闸门
+  → NLI 语义验证 (sensenova flash-lite, fallback deepseek)
+  → ICS 交互可信度评分
+  → 输出候选知识图谱
+```
+
+## 快速开始
+
+```bash
+# 1. 配置
+cp .env.example .env
+# 编辑 .env，填入 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL
+
+# 2. 安装依赖
+pip install -r requirements.txt
+
+# 3. 冒烟测试（无需 API key）
+python scripts/02_run_extraction.py --from json --input examples/sample_paper.json --mock
+
+# 4. 真跑
+python scripts/02_run_extraction.py --from json --input data/papers_json --limit 100
+```
+
+## 一键 Pipeline
+
+```bash
+# 全流程：下载 → 评分 → 抽取 → 合并
+bash run_pipeline.sh all "astragalus membranaceus" 10 --tag my-run
+
+# 仅抽取已有 JSON
+bash run_pipeline.sh extract-all --tag my-run
+
+# 查看结果
+cat out/runs/my-run/paper_triples_merged.jsonl
+```
+
+## 校验闸门 (v5.1)
+
+```
+每条 LLM 返回的三元组:
+
+  ── 类型覆盖 ──
+  成分名强制覆盖 (polysaccharide → MolecularEntity)
+  + 缩写展开 (APS → Astragalus polysaccharide)
+  + 同论文类型一致性
+
+  Gate 0: 完整性
+  Gate 1: Schema domain/range
+  Gate 2: Provenance 三闸 (evidence 存在于原文)
+  Gate 2.5: Char span 精确对齐
+  Gate 3: 实体-证据词边界匹配
+  Gate 3.5: NLI 语义校验 ← NEW
+    entailment   → 通过
+    contradiction → 拒绝
+    neutral      → 降级 (confidence × 0.6)
+  Gate 3.6: HDI 重分类 (无 PK → COMPLEMENTS) ← NEW
+  Gate 4: 否定检测 → warning
+  Gate 4.5: 结构关系置信度加成 ← NEW
+  ── 组装 → node_id/edge_id → 去重
+```
+
+## 双模型
+
+| 模型 | 用途 | Provider |
+|------|------|----------|
+| `deepseek-v4-pro` | 三元组抽取 | NVIDIA NIM |
+| `sensenova-6.7-flash-lite` | NLI 语义校验 | SenseNova |
+| `deepseek-v4-pro` (fallback) | NLI 兜底 | NVIDIA NIM |
+
+## 关系类型
+
+| 优先级 | 关系 | 说明 |
+|--------|------|------|
+| P0 | DDI, HDI, HHI, INTERACTS_WITH | 药物相互作用（用药安全） |
+| P0 | TREATS, WM_TREATS | 疗效声明 |
+| P0 | HERB_CONTAINS_INGREDIENT | 草药-成分 |
+| P1 | MOLECULARLY_TARGETS, GENE_ASSOCIATED_WITH_DISEASE | 机制链 |
+| P1 | COMPLEMENTS_WM_THERAPY | 中西医联用 |
+| P2 | HAS_PHENOTYPE, PARTICIPATES_IN_PATHWAY 等 | 辅助关系 |
+
+## 输出格式
+
+```json
+{
+  "edge_id": "a1b2c3d4e5f6a7b8",
+  "head": "Astragalus membranaceus", "head_type": "Herb",
+  "relation": "TREATS",
+  "tail": "diabetic nephropathy", "tail_type": "DiseaseWM",
+  "evidence_sentence": "Astragalus significantly improved renal function...",
+  "confidence": 0.88,
+  "evidence_tier": "A",
+  "nli_label": "entailment",
+  "ics_score": 72, "ics_tier": "B"
+}
+```
+
+## 目录
+
+```
+paper-kg-extraction/
+├── src/                    # 核心引擎
+│   ├── extract.py           _make_edge 10 道闸门
+│   ├── nli.py               NLI 语义校验模块
+│   ├── llm_client.py        双模型客户端 + NLI 工厂
+│   ├── prompts.py           v3 prompt（9 铁律 + 5 few-shot）
+│   ├── provenance.py        溯源三闸 + 括号补全
+│   ├── segment.py           语义单元切分
+│   ├── schema_loader.py     本体加载 + 校验
+│   ├── ids.py               node_id / edge_id
+│   ├── interaction_credibility.py  ICS v2.0 评分
+│   └── validate_output.py   验收预检
+├── scripts/                入口脚本
+│   ├── 02_run_extraction.py  主抽取
+│   ├── 03_validate.py        验收
+│   └── 04_merge_interactions.py  跨论文合并
+├── schema/                 本体定义 (core/tcm/wm/bridge/lit)
+├── tools/                  辅助工具
+│   └── evidence_grader.py  论文权威度评分
+├── run_pipeline.sh         一键 Pipeline
+└── examples/               示例数据
+```
+
+## v5.1 改进
+
+- **NLI 语义校验**: evidence 蕴含判断，弱证据降级 / 矛盾拒绝
+- **类型强制覆盖**: 多糖/皂苷等不会被标为 Herb
+- **HDI 重分类**: 无 PK 证据自动归为 COMPLEMENTS_WM_THERAPY
+- **结构关系置信度**: CONTAINS +0.25 加成
+- **括号补全**: 截断证据 `(n=5` → `(n=5)`
+- **skip_nli 前置规则**: 含明确断言词直接跳过 NLI API
+- **否定误杀修复**: "not only...but also" 不触发 negation_warning
+- **耗时统计**: extraction_report 含 `"elapsed": "3h25m12s"`
+
+## License
+
+MIT
