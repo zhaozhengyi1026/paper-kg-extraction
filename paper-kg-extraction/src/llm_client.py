@@ -50,7 +50,7 @@ class LLMClient:
             raise RuntimeError("需要 openai 包：pip install openai>=1.0") from e
         self._client = OpenAI(base_url=self.base_url, api_key=self.api_key)
 
-    def complete_json(self, system: str, user: str, retries: int = 5) -> dict:
+    def complete_json(self, system: str, user: str, retries: int = 3) -> dict:
         """调 chat.completions，返回 JSON 对象。
 
         失败自动重试：指数退避 + 随机抖动，最多 retries 次。
