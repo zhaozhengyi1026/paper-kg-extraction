@@ -661,6 +661,7 @@ def _make_edge(tr, unit, schema, run_id, method, tier, conf,
     return {
         "edge_id": eid, "head_id": hid, "tail_id": tid,
         "head": head, "head_type": ht, "tail": tail, "tail_type": tt,
+        "_head_canon": _canon_head, "_tail_canon": _canon_tail,
         "relation": rel, "qualifiers": tr.get("qualifiers", {}) or {},
         "evidence_sentence": ver.get("evidence_sentence", ""),
         "evidence_chunk_id": unit.get("unit_id", ""),

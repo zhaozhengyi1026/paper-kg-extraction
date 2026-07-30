@@ -41,10 +41,9 @@ def check_edge(e: dict, schema: Schema) -> list[str]:
             errs.append(f"缺字段 {k}")
     if errs:
         return errs
-    # B: ID 自洽 — 使用与 _make_edge 相同的规范化逻辑
-    from extract import _canonicalize_entity_name
-    canon_head = _canonicalize_entity_name(e["head"], e["head_type"])
-    canon_tail = _canonicalize_entity_name(e["tail"], e["tail_type"])
+    # B: ID 自洽 — 使用 _make_edge 存的 canonical name（含缩写展开）
+    canon_head = e.get("_head_canon") or e["head"]
+    canon_tail = e.get("_tail_canon") or e["tail"]
     hid = node_id(canon_head, e["head_type"])
     tid = node_id(canon_tail, e["tail_type"])
     if e["head_id"] != hid:
