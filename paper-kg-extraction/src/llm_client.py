@@ -26,6 +26,20 @@ import sys
 import time
 
 
+# 跨调用的限流保护
+_last_call = 0.0
+_MIN_INTERVAL = 1.0  # 秒
+
+
+def _rate_limit():
+    global _last_call
+    now = time.time()
+    gap = _MIN_INTERVAL - (now - _last_call)
+    if gap > 0:
+        time.sleep(gap)
+    _last_call = time.time()
+
+
 class LLMClient:
     def __init__(self, mock: bool = False,
                  base_url: str | None = None,
@@ -50,7 +64,7 @@ class LLMClient:
             raise RuntimeError("需要 openai 包：pip install openai>=1.0") from e
         self._client = OpenAI(base_url=self.base_url, api_key=self.api_key)
 
-    def complete_json(self, system: str, user: str, retries: int = 3) -> dict:
+    def complete_json(self, system: str, user: str, retries: int = 5) -> dict:
         """调 chat.completions，返回 JSON 对象。
 
         失败自动重试：指数退避 + 随机抖动，最多 retries 次。
@@ -59,6 +73,8 @@ class LLMClient:
         """
         if self.mock:
             return _mock_extract(user)
+        # 限流保护：两次调用间隔 >= 1s
+        _rate_limit()
         import random as _random
         use_response_format = os.environ.get("LLM_RESPONSE_FORMAT", "1") not in ("0", "no", "false")
         last = None
