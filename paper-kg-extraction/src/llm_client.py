@@ -107,6 +107,33 @@ class LLMClient:
         raise RuntimeError(f"LLM 调用失败（{retries} 次重试后）: {str(last)[:200]}")
 
 
+class FallbackLLMClient:
+    """Try the primary extraction model, then a fallback model on failure."""
+
+    def __init__(self, primary: LLMClient, fallback: LLMClient):
+        self.primary = primary
+        self.fallback = fallback
+        self.model = primary.model
+        self.model_chain = [primary.model, fallback.model]
+        self.usage_counts = {primary.model: 0, fallback.model: 0}
+
+    def complete_json(self, system: str, user: str, retries: int = 5) -> dict:
+        try:
+            result = self.primary.complete_json(system, user, retries=retries)
+            self.usage_counts[self.primary.model] += 1
+            return result
+        except Exception as primary_error:
+            print(
+                f"      ⚠ 主抽取模型 {self.primary.model} 失败，切换到 {self.fallback.model}: "
+                f"{str(primary_error)[:120]}",
+                file=sys.stderr,
+                flush=True,
+            )
+        result = self.fallback.complete_json(system, user, retries=retries)
+        self.usage_counts[self.fallback.model] += 1
+        return result
+
+
 def _loads_lenient(txt: str) -> dict:
     txt = txt.strip()
     if txt.startswith("```"):
@@ -180,7 +207,32 @@ def _mock_extract(user: str) -> dict:
     return {"triples": triples}
 
 
-# ── NLI 客户端工厂 ──
+# ── 抽取与 NLI 客户端工厂 ──
+
+def create_extraction_client(mock: bool = False):
+    """Create SenseNova-primary extraction with the legacy LLM as fallback.
+
+    ``SENSENOVA_*`` configures the primary model. Existing ``LLM_*`` variables
+    remain the fallback configuration, so current DeepSeek deployments continue
+    to work without renaming secrets.
+    """
+    if mock:
+        return LLMClient(mock=True)
+
+    fallback = LLMClient()
+    sense_key = os.environ.get("SENSENOVA_API_KEY") or os.environ.get("NLI_API_KEY", "")
+    if not sense_key:
+        print("      ⚠ 未配置 SENSENOVA_API_KEY，抽取仅使用 LLM_* fallback",
+              file=sys.stderr, flush=True)
+        return fallback
+
+    primary = LLMClient(
+        base_url=os.environ.get("SENSENOVA_BASE_URL", "https://token.sensenova.cn/v1"),
+        api_key=sense_key,
+        model=os.environ.get("SENSENOVA_MODEL", "sensenova-6.7-flash-lite"),
+        temperature=0,
+    )
+    return FallbackLLMClient(primary, fallback)
 
 def create_nli_client(fallback_llm=None):
     """创建 NLI 专用 LLM 客户端。
@@ -193,10 +245,12 @@ def create_nli_client(fallback_llm=None):
         NLI_MODEL      NLI 模型名称
     """
     nli_url = os.environ.get("NLI_BASE_URL", "https://token.sensenova.cn/v1")
-    nli_key = os.environ.get("NLI_API_KEY", "sk-g49OmT4LIXNtgpvJndKL9CSO6zOkiTl5")
+    nli_key = os.environ.get("NLI_API_KEY") or os.environ.get("SENSENOVA_API_KEY", "")
     nli_model = os.environ.get("NLI_MODEL", "sensenova-6.7-flash-lite")
 
     try:
+        if not nli_key:
+            raise RuntimeError("未配置 NLI_API_KEY 或 SENSENOVA_API_KEY")
         return LLMClient(
             base_url=nli_url,
             api_key=nli_key,
@@ -209,5 +263,7 @@ def create_nli_client(fallback_llm=None):
 
     # 回退：复用主抽取 LLM
     if fallback_llm is not None:
-        return fallback_llm
+        # Extraction may itself be a SenseNova→DeepSeek chain. NLI fallback
+        # should go directly to DeepSeek instead of retrying SenseNova again.
+        return getattr(fallback_llm, "fallback", fallback_llm)
     return None

@@ -7,7 +7,7 @@
 ```
 论文 (PubMed/PMC OA)
   → 语义单元切分 (1200 char/unit)
-  → LLM 抽取三元组 (deepseek-v4-pro)
+  → LLM 抽取三元组 (SenseNova 优先，deepseek-v4-pro fallback)
   → 10 道校验闸门
   → NLI 语义验证 (sensenova flash-lite, fallback deepseek)
   → ICS 交互可信度评分
@@ -73,7 +73,8 @@ cat out/runs/my-run/paper_triples_merged.jsonl
 
 | 模型 | 用途 | Provider |
 |------|------|----------|
-| `deepseek-v4-pro` | 三元组抽取 | NVIDIA NIM |
+| `sensenova-6.7-flash-lite` | 三元组抽取（主） | SenseNova |
+| `deepseek-v4-pro` | 三元组抽取（fallback） | NVIDIA NIM |
 | `sensenova-6.7-flash-lite` | NLI 语义校验 | SenseNova |
 | `deepseek-v4-pro` (fallback) | NLI 兜底 | NVIDIA NIM |
 

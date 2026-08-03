@@ -16,6 +16,19 @@ sys.path.insert(0, str(REPO / "tools"))
 
 from interaction_credibility import cross_source_merge  # noqa: E402
 from bridge_papers_to_json import export_papers  # noqa: E402
+from llm_client import FallbackLLMClient  # noqa: E402
+
+
+class _FakeLLM:
+    def __init__(self, model, result=None, error=None):
+        self.model = model
+        self.result = result
+        self.error = error
+
+    def complete_json(self, system, user, retries=5):
+        if self.error:
+            raise self.error
+        return self.result
 
 
 def _load_runner():
@@ -44,6 +57,24 @@ def test_checkpoint_includes_zero_edge_papers(tmp_path):
         encoding="utf-8",
     )
     assert runner.load_processed(checkpoint) == {"pmid:1"}
+
+
+def test_extraction_prefers_sensenova():
+    client = FallbackLLMClient(
+        _FakeLLM("sensenova", {"triples": []}),
+        _FakeLLM("deepseek", {"triples": ["fallback"]}),
+    )
+    assert client.complete_json("system", "user") == {"triples": []}
+    assert client.usage_counts == {"sensenova": 1, "deepseek": 0}
+
+
+def test_extraction_falls_back_to_deepseek():
+    client = FallbackLLMClient(
+        _FakeLLM("sensenova", error=RuntimeError("primary failed")),
+        _FakeLLM("deepseek", {"triples": []}),
+    )
+    assert client.complete_json("system", "user") == {"triples": []}
+    assert client.usage_counts == {"sensenova": 0, "deepseek": 1}
 
 
 def test_cross_source_merge_counts_distinct_papers():

@@ -34,7 +34,7 @@ for _s in (sys.stdout, sys.stderr):
         pass
 
 from extract import extract_paper, new_run_id  # noqa: E402
-from llm_client import LLMClient  # noqa: E402
+from llm_client import create_extraction_client  # noqa: E402
 from schema_loader import Schema  # noqa: E402
 from interaction_credibility import batch_enrich  # noqa: E402
 
@@ -158,7 +158,7 @@ def main():
     args = ap.parse_args()
 
     schema = Schema()
-    llm = LLMClient(mock=args.mock)
+    llm = create_extraction_client(mock=args.mock)
     run_id = new_run_id()
     _t0 = time.time()
     out_path = Path(args.out)
@@ -359,6 +359,8 @@ def main():
         "elapsed": _fmt_elapsed(time.time() - _t0),
         "schema_version": schema.schema_version,
         "checkpoint_file": str(processed_path),
+        "extraction_models": getattr(llm, "model_chain", [getattr(llm, "model", "mock")]),
+        "model_usage": getattr(llm, "usage_counts", {}),
         "reject_stats": stats,
     }
     rep_path = out_path.parent / "extraction_report.json"
