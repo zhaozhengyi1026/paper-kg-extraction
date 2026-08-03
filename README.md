@@ -47,6 +47,53 @@ bash run_pipeline.sh extract-all --tag my-run
 cat out/runs/my-run/paper_triples_merged.jsonl
 ```
 
+## 全库知识图谱抽取
+
+`queries.tsv` 只用于专题采集；全 PubMed 不应通过关键词枚举。先用 PubMed
+baseline 和 daily updates 建立完整 SQLite 库，再由抽取器直接流式读取。抽取时有
+PMC 全文就使用全文，否则使用 PubMed 摘要。`--limit 0` 表示不设论文数量上限。
+
+单进程断点续跑：
+
+```bash
+cd /home/featurize/work/zhaozhengyi/paper-kg-extraction
+nohup python scripts/02_run_extraction.py \
+  --from db --db /home/featurize/work/zhaozhengyi/med-papers/pubmed_full.db \
+  --limit 0 --workers 3 \
+  --out out/runs/pubmed_all/shard-000.jsonl \
+  --batch-id batch:pubmed:baseline:all \
+  > out/runs/pubmed_all/shard-000.log 2>&1 < /dev/null &
+```
+
+推荐按 PMID 分片。下面示例启动 8 个互不重叠的后台任务；每个任务内部默认
+SenseNova 优先、DeepSeek fallback。API 限流较严时减少 `--workers` 或分片数。
+
+```bash
+mkdir -p out/runs/pubmed_all
+for i in $(seq 0 7); do
+  nohup python scripts/02_run_extraction.py \
+    --from db --db /home/featurize/work/zhaozhengyi/med-papers/pubmed_full.db \
+    --limit 0 --shard-count 8 --shard-index "$i" --workers 2 \
+    --out "out/runs/pubmed_all/shard-${i}.jsonl" \
+    --batch-id batch:pubmed:baseline:all \
+    > "out/runs/pubmed_all/shard-${i}.log" 2>&1 < /dev/null &
+done
+```
+
+每个输出旁的 `*_processed.jsonl` 是论文级成功检查点；使用相同命令和输出路径会
+自动跳过已完成论文，LLM 错误则重试。所有分片结束后再合并，不能边写边合并：
+
+```bash
+cat out/runs/pubmed_all/shard-*.jsonl > out/runs/pubmed_all/paper_triples.jsonl
+python scripts/04_merge_interactions.py \
+  out/runs/pubmed_all/paper_triples.jsonl \
+  --out out/runs/pubmed_all/paper_triples_merged.jsonl
+python scripts/03_validate.py out/runs/pubmed_all/paper_triples_merged.jsonl
+```
+
+抽取器和合并器均采用流式/磁盘暂存方式，不会一次把全部论文或三元组装入内存。
+全库任务预计是长期、高成本作业；先用 `--limit 100` 验证吞吐、费用和限流。
+
 ## 校验闸门 (v5.1)
 
 ```

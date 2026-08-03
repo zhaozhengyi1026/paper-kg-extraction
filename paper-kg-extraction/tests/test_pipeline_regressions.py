@@ -62,6 +62,34 @@ def test_checkpoint_includes_zero_edge_papers(tmp_path):
     assert runner.load_processed(checkpoint) == {"pmid:1"}
 
 
+def test_db_stream_uses_fulltext_then_abstract_and_shards(tmp_path):
+    runner = _load_runner()
+    db = tmp_path / "corpus.db"
+    con = sqlite3.connect(db)
+    con.executescript("""
+      CREATE TABLE papers (
+        pmid TEXT, pmcid TEXT, doi TEXT, title TEXT, abstract TEXT, license TEXT,
+        evidence_level TEXT, journal TEXT, authority_tier TEXT, authority_score REAL
+      );
+      CREATE TABLE pmc_fulltext (
+        pmcid TEXT, sections TEXT, license TEXT
+      );
+      INSERT INTO papers VALUES
+        ('10','PMC10','','full','abstract 10','pubmed','','','','0'),
+        ('11','','','abstract','abstract 11','pubmed','','','','0');
+      INSERT INTO pmc_fulltext VALUES
+        ('PMC10','[{"title":"Results","text":"full text 10"}]','cc-by');
+    """)
+    con.commit()
+    con.close()
+    shard0 = list(runner.papers_from_db(str(db), 0, "batch", 2, 0))
+    shard1 = list(runner.papers_from_db(str(db), 0, "batch", 2, 1))
+    assert [p["pmid"] for p in shard0] == ["10"]
+    assert [p["pmid"] for p in shard1] == ["11"]
+    assert shard0[0]["sections"][0]["text"] == "full text 10"
+    assert shard1[0]["sections"] == [{"title": "Abstract", "text": "abstract 11"}]
+
+
 def test_extraction_prefers_sensenova():
     client = FallbackLLMClient(
         _FakeLLM("sensenova", {"triples": []}),
@@ -107,6 +135,18 @@ def test_nli_defaults_to_sensenova(monkeypatch):
     monkeypatch.setenv("SENSENOVA_MODEL", "sensenova-test")
     client = create_nli_client()
     assert client.model == "sensenova-test"
+
+
+def test_nli_falls_back_to_deepseek(monkeypatch):
+    monkeypatch.setenv("SENSENOVA_API_KEY", "test-key")
+    deepseek = _FakeLLM("deepseek", {"label": "entailment"})
+    extraction_chain = FallbackLLMClient(_FakeLLM("sensenova"), deepseek)
+    client = create_nli_client(extraction_chain)
+    client.primary.complete_json = lambda *args, **kwargs: (_ for _ in ()).throw(
+        RuntimeError("SenseNova unavailable")
+    )
+    assert client.complete_json("system", "user") == {"label": "entailment"}
+    assert deepseek.calls == 1
 
 
 def test_cross_source_merge_counts_distinct_papers():

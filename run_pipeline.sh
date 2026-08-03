@@ -418,7 +418,6 @@ case "$1" in
     ALL_OUT=$ALL_RUN_DIR/paper_triples.jsonl
     ALL_MERGED=$ALL_RUN_DIR/paper_triples_merged.jsonl
     ALL_MERGE_REPORT=$ALL_RUN_DIR/merge_report.json
-    ALL_JSON_DIR=$ALL_RUN_DIR/papers_json
     mkdir -p "$ALL_RUN_DIR"
 
     # ── 检测断点续跑状态 ──
@@ -460,29 +459,24 @@ case "$1" in
     python $TOOLS/batch_download_pmc.py
     echo ""
 
-    # ── Step 3: 创建本次运行的独立输入快照 ──
-    echo "=== Step 3/6: 桥接全部论文 → 独立 JSON 快照 ==="
-    python $TOOLS/bridge_papers_to_json.py --db $DB --out "$ALL_JSON_DIR" --limit 0 --clean
-    echo ""
-
-    # ── Step 4: LLM 抽取 (tqdm 进度条，需在 conda activate 后运行) ──
-    echo "=== Step 4/6: 抽取知识图谱 (进度条↓) ==="
+    # ── Step 3: 直接从数据库流式抽取，避免生成数千万个小 JSON 文件 ──
+    echo "=== Step 3/5: 从数据库流式抽取知识图谱 (进度条↓) ==="
     echo "输出: $ALL_OUT"
     cd $EXTRACTOR
     python scripts/02_run_extraction.py \
-      --from json --input "$ALL_JSON_DIR" \
+      --from db --db "$DB" --limit 0 \
       --out "$ALL_OUT" \
       --batch-id "batch:pubmed:$ALL_TAG" $MOCK $NO_RESUME
     echo ""
 
-    # ── Step 5: 跨论文合并 + ICS v2.0 ──
-    echo "=== Step 5/6: 合并交互 + ICS v2.0 评分 ==="
+    # ── Step 4: 跨论文磁盘合并 + ICS v2.0 ──
+    echo "=== Step 4/5: 合并交互 + ICS v2.0 评分 ==="
     python scripts/04_merge_interactions.py "$ALL_OUT" --out "$ALL_MERGED" \
       --report "$ALL_MERGE_REPORT"
     echo ""
 
-    # ── Step 6: 验收 ──
-    echo "=== Step 6/6: 验收自检 ==="
+    # ── Step 5: 验收 ──
+    echo "=== Step 5/5: 验收自检 ==="
     python scripts/03_validate.py "$ALL_OUT"
     python scripts/03_validate.py "$ALL_MERGED"
     echo ""

@@ -69,23 +69,45 @@ def _fmt_elapsed(sec: float) -> str:
     return f"{s}s"
 
 
-def papers_from_db(db_path: str, limit: int, batch_id: str):
-    """从 med-paper-collector 库读带全文的论文，联 papers 元数据补 evidence_level/license/authority。"""
+def papers_from_db(db_path: str, limit: int, batch_id: str,
+                   shard_count: int = 1, shard_index: int = 0):
+    """流式读取论文；全文优先，无全文时使用摘要，并支持确定性 PMID 分片。"""
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
-    q = """
-      SELECT f.pmcid, f.pmid, f.doi, f.title, f.abstract, f.sections, f.license AS f_lic,
-             p.evidence_level, p.journal_tier, p.license AS p_lic, p.pub_types, p.journal,
+    has_fulltext = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pmc_fulltext'"
+    ).fetchone() is not None
+    fulltext_join = "LEFT JOIN pmc_fulltext f ON f.pmcid = p.pmcid" if has_fulltext else ""
+    fulltext_fields = ("f.sections, f.license AS f_lic" if has_fulltext
+                       else "NULL AS sections, NULL AS f_lic")
+    q = f"""
+      SELECT p.pmcid, p.pmid, p.doi, p.title, p.abstract, {fulltext_fields},
+             p.evidence_level, p.license AS p_lic, p.journal,
              p.authority_tier, p.authority_score
-      FROM pmc_fulltext f
-      LEFT JOIN papers p ON p.pmcid = f.pmcid
-      WHERE f.sections IS NOT NULL AND f.sections != '' AND f.sections != '[]'
-      LIMIT ?"""
-    for r in con.execute(q, (limit,)):
+      FROM papers p
+      {fulltext_join}
+      WHERE ((f.sections IS NOT NULL AND f.sections != '' AND f.sections != '[]')
+             OR (p.abstract IS NOT NULL AND p.abstract != ''))
+        AND (CAST(p.pmid AS INTEGER) % ? = ?)
+      ORDER BY CAST(p.pmid AS INTEGER), p.pmid""" if has_fulltext else f"""
+      SELECT p.pmcid, p.pmid, p.doi, p.title, p.abstract, {fulltext_fields},
+             p.evidence_level, p.license AS p_lic, p.journal,
+             p.authority_tier, p.authority_score
+      FROM papers p
+      WHERE p.abstract IS NOT NULL AND p.abstract != ''
+        AND (CAST(p.pmid AS INTEGER) % ? = ?)
+      ORDER BY CAST(p.pmid AS INTEGER), p.pmid"""
+    params = [shard_count, shard_index]
+    if limit > 0:
+        q += " LIMIT ?"
+        params.append(limit)
+    for r in con.execute(q, params):
         try:
             sections = json.loads(r["sections"]) if r["sections"] else []
         except json.JSONDecodeError:
             sections = []
+        if not sections and r["abstract"]:
+            sections = [{"title": "Abstract", "text": r["abstract"]}]
         yield {
             "pmcid": r["pmcid"], "pmid": r["pmid"], "doi": r["doi"],
             "title": r["title"], "abstract": r["abstract"] or "",
@@ -210,13 +232,20 @@ def main():
                     help="med-paper-collector 的 SQLite 路径")
     ap.add_argument("--input", help="--from json 时的文件/目录")
     ap.add_argument("--out", default=str(ROOT / "out" / "candidate_kg" / "paper_triples.jsonl"))
-    ap.add_argument("--limit", type=int, default=100)
+    ap.add_argument("--limit", type=int, default=0,
+                    help="最多处理多少篇；0 表示全部（默认）")
+    ap.add_argument("--shard-count", type=int, default=1,
+                    help="将数据库按 PMID 确定性切成多少片")
+    ap.add_argument("--shard-index", type=int, default=0,
+                    help="本进程处理的分片编号，范围 0..shard-count-1")
     ap.add_argument("--batch-id", default="batch:local:00000000:manual")
     ap.add_argument("--mock", action="store_true", help="离线确定性抽取（无需 API key，仅冒烟）")
     ap.add_argument("--no-resume", action="store_true", help="不续跑：即使输出文件已存在也重新抽取全部")
     ap.add_argument("--workers", type=int, default=int(os.environ.get("EXTRACTION_WORKERS", "2")),
                     help="并发处理论文数；建议 2-3，默认 1")
     args = ap.parse_args()
+    if args.shard_count < 1 or not 0 <= args.shard_index < args.shard_count:
+        ap.error("要求 shard-count >= 1 且 0 <= shard-index < shard-count")
 
     schema = Schema()
     llm = create_extraction_client(mock=args.mock)
@@ -226,7 +255,8 @@ def main():
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     if args.src == "db":
-        papers = papers_from_db(args.db, args.limit, args.batch_id)
+        papers = papers_from_db(args.db, args.limit, args.batch_id,
+                                args.shard_count, args.shard_index)
     else:
         if not args.input:
             ap.error("--from json 需要 --input")
@@ -234,10 +264,10 @@ def main():
 
     stats: dict = {}
     accepted_by_model: Counter = Counter()
-    paper_durations: list[float] = []
+    duration_sample: list[float] = []
+    duration_sum = duration_max = 0.0
     n_papers = n_edges = n_rejects = n_warnings = 0
-    all_rejects: list = []
-    all_warnings: list = []
+    reject_reasons: Counter = Counter()
     rejects_path = out_path.parent / (out_path.stem + "_rejects.jsonl")
     warns_path = out_path.parent / (out_path.stem + "_warnings.jsonl")
     processed_path = out_path.parent / (out_path.stem + "_processed.jsonl")
@@ -287,22 +317,16 @@ def main():
     if seen_ids:
         print(f"断点续跑: 跳过已处理的 {len(seen_ids)} 篇论文", file=sys.stderr, flush=True)
 
-    pending_papers = [paper for paper in papers if paper_source_id(paper) not in seen_ids]
-    manifest_path = out_path.parent / "input_manifest.json"
-    manifest_path.write_text(json.dumps({
-        "batch_id": args.batch_id,
-        "papers": [{
-            "source_id": paper_source_id(p),
-            "title": p.get("title", ""),
-            "pmid": p.get("pmid", ""),
-            "pmcid": p.get("pmcid", ""),
-            "doi": p.get("doi", ""),
-        } for p in pending_papers],
-    }, ensure_ascii=False, indent=2), encoding="utf-8")
-    total = len(pending_papers) + len(seen_ids)
-    remaining = len(pending_papers)
+    pending_papers = (paper for paper in papers if paper_source_id(paper) not in seen_ids)
+    manifest_path = out_path.parent / "input_manifest.jsonl"
+    # JSONL manifest is appended while streaming; it stays valid for very large corpora.
+    manifest_path.write_text("", encoding="utf-8")
+    total = args.limit if args.limit > 0 else None
+    remaining = total
     print()
-    print(f"加载 {total} 篇论文，待抽取 {remaining} 篇，开始…", file=sys.stderr, flush=True)
+    scope = f"最多 {total}" if total else "全部"
+    print(f"流式加载论文（{scope}，分片 {args.shard_index}/{args.shard_count}），开始…",
+          file=sys.stderr, flush=True)
 
     open_mode = "a" if (out_path.exists() and not args.no_resume) else "w"
     if open_mode == "w":
@@ -329,12 +353,33 @@ def main():
             executor = None
         else:
             executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="paper-extract")
-            results = executor.map(lambda p: extract_one_paper(p, schema, llm, run_id), pending_papers)
+            # buffersize is only available in newer Python versions; bounded chunks
+            # prevent Executor.map from materializing the complete PubMed corpus.
+            def bounded_results():
+                from itertools import islice
+                while True:
+                    chunk = list(islice(pending_papers, workers * 2))
+                    if not chunk:
+                        return
+                    yield from executor.map(
+                        lambda p: extract_one_paper(p, schema, llm, run_id), chunk)
+            results = bounded_results()
         for paper, edges, paper_rejects, paper_warns, paper_stats, paper_had_llm_error, paper_elapsed in results:
             sid = paper_source_id(paper)
+            with manifest_path.open("a", encoding="utf-8") as manifest:
+                manifest.write(json.dumps({
+                    "source_id": sid, "title": paper.get("title", ""),
+                    "pmid": paper.get("pmid", ""), "pmcid": paper.get("pmcid", ""),
+                    "doi": paper.get("doi", ""),
+                }, ensure_ascii=False) + "\n")
 
             n_papers += 1
-            paper_durations.append(paper_elapsed)
+            duration_sum += paper_elapsed
+            duration_max = max(duration_max, paper_elapsed)
+            # Bound report memory while retaining a useful rolling latency sample.
+            if len(duration_sample) >= 10000:
+                duration_sample.pop(0)
+            duration_sample.append(paper_elapsed)
             pi += 1
             sid = paper_source_id(paper)
             if sid:
@@ -351,7 +396,7 @@ def main():
             else:
                 title = raw_title
 
-            if pbar:
+            if pbar is not None:
                 pbar.set_description_str(f"{sid_short} | {title}", refresh=True)
 
             for key, value in paper_stats.items():
@@ -360,14 +405,13 @@ def main():
 
             if paper_rejects:
                 n_rejects += len(paper_rejects)
-                all_rejects.extend(paper_rejects)
+                reject_reasons.update(r.get("reject_reason", "unknown") for r in paper_rejects)
                 with rejects_path.open("a", encoding="utf-8") as fr:
                     for rj in paper_rejects:
                         fr.write(json.dumps(rj, ensure_ascii=False) + "\n")
 
             if paper_warns:
                 n_warnings += len(paper_warns)
-                all_warnings.extend(paper_warns)
                 with warns_path.open("a", encoding="utf-8") as fw:
                     for w in paper_warns:
                         fw.write(json.dumps(w, ensure_ascii=False) + "\n")
@@ -398,7 +442,7 @@ def main():
                     if hasattr(os, "fsync"):
                         os.fsync(checkpoint.fileno())
 
-            if pbar:
+            if pbar is not None:
                 pbar.update(1)
                 pbar.set_postfix({
                     "边": n_edges,
@@ -409,7 +453,8 @@ def main():
                 }, refresh=True)
             else:
                 suffix = "" if len(edges) > 0 else " (论文无有效三元组)"
-                print(f"[{pi}/{remaining}] {title} -> {len(edges)} 边 (累计 {n_edges}){suffix}",
+                denominator = remaining if remaining else "?"
+                print(f"[{pi}/{denominator}] {title} -> {len(edges)} 边 (累计 {n_edges}){suffix}",
                       file=sys.stderr, flush=True)
 
             if n_papers % 20 == 0 and not pbar:
@@ -418,11 +463,10 @@ def main():
         if executor is not None:
             executor.shutdown(wait=True)
 
-    if pbar:
+    if pbar is not None:
         pbar.close()
 
-    reject_reasons = Counter(r["reject_reason"] for r in all_rejects)
-    sorted_durations = sorted(paper_durations)
+    sorted_durations = sorted(duration_sample)
     p95_index = max(0, int(len(sorted_durations) * 0.95) - 1)
 
     report = {
@@ -442,10 +486,12 @@ def main():
                           else {"model": getattr(llm, "model", "mock"),
                                 "metrics": getattr(llm, "metrics", {})}),
         "workers": max(1, min(args.workers, 8)),
+        "shard": {"index": args.shard_index, "count": args.shard_count},
         "paper_latency_seconds": {
-            "avg": round(sum(paper_durations) / len(paper_durations), 3) if paper_durations else 0,
+            "avg": round(duration_sum / n_papers, 3) if n_papers else 0,
             "p95": round(sorted_durations[p95_index], 3) if sorted_durations else 0,
-            "max": round(max(paper_durations), 3) if paper_durations else 0,
+            "max": round(duration_max, 3),
+            "p95_sample_size": len(duration_sample),
         },
         "reproducibility": reproducibility_metadata(manifest_path),
         "reject_stats": stats,

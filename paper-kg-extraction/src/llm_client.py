@@ -365,12 +365,17 @@ def create_nli_client(fallback_llm=None):
     try:
         if not nli_key:
             raise RuntimeError("未配置 NLI_API_KEY 或 SENSENOVA_API_KEY")
-        return LLMClient(
+        primary = LLMClient(
             base_url=nli_url,
             api_key=nli_key,
             model=nli_model,
             temperature=0,
         )
+        if fallback_llm is not None:
+            deepseek = getattr(fallback_llm, "fallback", fallback_llm)
+            if deepseek is not primary:
+                return FallbackLLMClient(primary, deepseek)
+        return primary
     except Exception as e:
         print(f"      ⚠ NLI 专用模型初始化失败 ({e})，回退到主模型",
               file=sys.stderr, flush=True)
