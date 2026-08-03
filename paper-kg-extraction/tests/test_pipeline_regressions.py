@@ -16,7 +16,7 @@ sys.path.insert(0, str(REPO / "tools"))
 
 from interaction_credibility import cross_source_merge  # noqa: E402
 from bridge_papers_to_json import export_papers  # noqa: E402
-from llm_client import FallbackLLMClient  # noqa: E402
+from llm_client import FallbackLLMClient, load_env_file  # noqa: E402
 
 
 class _FakeLLM:
@@ -75,6 +75,14 @@ def test_extraction_falls_back_to_deepseek():
     )
     assert client.complete_json("system", "user") == {"triples": []}
     assert client.usage_counts == {"sensenova": 0, "deepseek": 1}
+
+
+def test_env_loader_supports_missing_python_dotenv(tmp_path, monkeypatch):
+    monkeypatch.delenv("SENSENOVA_TEST_KEY", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text('SENSENOVA_TEST_KEY="configured"\n', encoding="utf-8")
+    load_env_file(env_file)
+    assert __import__("os").environ["SENSENOVA_TEST_KEY"] == "configured"
 
 
 def test_cross_source_merge_counts_distinct_papers():

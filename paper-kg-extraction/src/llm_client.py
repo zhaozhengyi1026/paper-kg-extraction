@@ -24,6 +24,37 @@ import os
 import re
 import sys
 import time
+from pathlib import Path
+
+
+def load_env_file(path: str | Path) -> None:
+    """Minimal python-dotenv fallback; never overrides process environment."""
+    env_path = Path(path)
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        os.environ.setdefault(key, value)
+
+
+# The package declares python-dotenv, but production environments may be
+# partially provisioned. Keep model configuration usable without that extra.
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+except ImportError:
+    load_env_file(Path(__file__).resolve().parent.parent / ".env")
 
 
 # 跨调用的限流保护
