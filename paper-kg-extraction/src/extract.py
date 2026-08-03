@@ -240,8 +240,10 @@ def extract_paper(paper: dict, schema, llm, run_id: str,
     # mock 模式下不创建 NLI 客户端（避免尝试连接 API）
     if getattr(llm, "mock", False):
         nli_llm = None
+        nli_fallback_llm = None
     else:
         nli_llm = create_nli_client(fallback_llm=llm)
+        nli_fallback_llm = getattr(llm, "fallback", llm)
     nli_cache: dict = {}           # (premise_hash, hyp) → label
     paper_type_map: dict = {}      # entity_name → type（同论文内统一类型）
 
@@ -299,7 +301,7 @@ def extract_paper(paper: dict, schema, llm, run_id: str,
                 continue
             edge = _make_edge(tr, unit, schema, run_id, method, tier, conf,
                               stats, reject_log, warn_log, paper,
-                              nli_llm=nli_llm, nli_fallback=llm,
+                              nli_llm=nli_llm, nli_fallback=nli_fallback_llm,
                               nli_cache=nli_cache,
                               paper_type_map=paper_type_map)
             if edge is None:

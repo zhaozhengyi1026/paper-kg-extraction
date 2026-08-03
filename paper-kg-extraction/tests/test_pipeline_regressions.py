@@ -16,7 +16,7 @@ sys.path.insert(0, str(REPO / "tools"))
 
 from interaction_credibility import cross_source_merge  # noqa: E402
 from bridge_papers_to_json import export_papers  # noqa: E402
-from llm_client import FallbackLLMClient, load_env_file  # noqa: E402
+from llm_client import FallbackLLMClient, create_nli_client, load_env_file  # noqa: E402
 
 
 class _FakeLLM:
@@ -98,6 +98,15 @@ def test_env_loader_supports_missing_python_dotenv(tmp_path, monkeypatch):
     env_file.write_text('SENSENOVA_TEST_KEY="configured"\n', encoding="utf-8")
     load_env_file(env_file)
     assert __import__("os").environ["SENSENOVA_TEST_KEY"] == "configured"
+
+
+def test_nli_defaults_to_sensenova(monkeypatch):
+    monkeypatch.delenv("NLI_MODEL", raising=False)
+    monkeypatch.delenv("NLI_API_KEY", raising=False)
+    monkeypatch.setenv("SENSENOVA_API_KEY", "test-key")
+    monkeypatch.setenv("SENSENOVA_MODEL", "sensenova-test")
+    client = create_nli_client()
+    assert client.model == "sensenova-test"
 
 
 def test_cross_source_merge_counts_distinct_papers():

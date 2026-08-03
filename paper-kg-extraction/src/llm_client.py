@@ -354,13 +354,13 @@ def create_nli_client(fallback_llm=None):
         NLI_API_KEY    NLI 模型 API key
         NLI_MODEL      NLI 模型名称
     """
-    nli_model = os.environ.get("NLI_MODEL", "")
-    # Unless an explicit independent NLI model is configured, use the
-    # DeepSeek extraction fallback to avoid self-review by SenseNova.
-    if not nli_model and fallback_llm is not None:
-        return getattr(fallback_llm, "fallback", fallback_llm)
-    nli_url = os.environ.get("NLI_BASE_URL", os.environ.get("LLM_BASE_URL", ""))
-    nli_key = os.environ.get("NLI_API_KEY") or os.environ.get("LLM_API_KEY", "")
+    nli_url = os.environ.get(
+        "NLI_BASE_URL", os.environ.get("SENSENOVA_BASE_URL", "https://token.sensenova.cn/v1")
+    )
+    nli_key = os.environ.get("NLI_API_KEY") or os.environ.get("SENSENOVA_API_KEY", "")
+    nli_model = os.environ.get(
+        "NLI_MODEL", os.environ.get("SENSENOVA_MODEL", "sensenova-6.7-flash-lite")
+    )
 
     try:
         if not nli_key:
