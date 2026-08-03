@@ -24,8 +24,11 @@ class _FakeLLM:
         self.model = model
         self.result = result
         self.error = error
+        self.calls = 0
+        self.metrics = {}
 
     def complete_json(self, system, user, retries=5):
+        self.calls += 1
         if self.error:
             raise self.error
         return self.result
@@ -77,6 +80,18 @@ def test_extraction_falls_back_to_deepseek():
     assert client.usage_counts == {"sensenova": 0, "deepseek": 1}
 
 
+def test_extraction_circuit_breaker_skips_failed_primary(monkeypatch):
+    monkeypatch.setenv("LLM_CIRCUIT_FAILURES", "1")
+    primary = _FakeLLM("sensenova", error=RuntimeError("down"))
+    fallback = _FakeLLM("deepseek", {"triples": []})
+    client = FallbackLLMClient(primary, fallback)
+    client.complete_json("system", "first")
+    client.complete_json("system", "second")
+    assert primary.calls == 1
+    assert fallback.calls == 2
+    assert client.fallback_reasons["circuit_open"] == 1
+
+
 def test_env_loader_supports_missing_python_dotenv(tmp_path, monkeypatch):
     monkeypatch.delenv("SENSENOVA_TEST_KEY", raising=False)
     env_file = tmp_path / ".env"
@@ -95,6 +110,26 @@ def test_cross_source_merge_counts_distinct_papers():
     merged = cross_source_merge({("A", "INTERACTS_WITH", "B", ""): [base, second]})[0]
     assert merged["source_count"] == 2
     assert merged["provenance"]["evidence_sources"] == ["pmid:1", "pmid:2"]
+    assert len(merged["evidence_records"]) == 2
+
+
+def test_symmetric_interactions_merge_when_reversed(tmp_path):
+    merger = _load_merger()
+    rows = [
+        {"head": "A", "head_id": "1", "tail": "B", "tail_id": "2",
+         "relation": "INTERACTS_WITH", "qualifiers": {},
+         "evidence_source_id": "pmid:1", "provenance": {"source_id": "pmid:1"}},
+        {"head": "B", "head_id": "2", "tail": "A", "tail_id": "1",
+         "relation": "INTERACTS_WITH", "qualifiers": {},
+         "evidence_source_id": "pmid:2", "provenance": {"source_id": "pmid:2"}},
+    ]
+    input_path = tmp_path / "input.jsonl"
+    output_path = tmp_path / "output.jsonl"
+    input_path.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
+    report = merger.merge_interactions(str(input_path), str(output_path))
+    merged = json.loads(output_path.read_text(encoding="utf-8"))
+    assert report["unique_pairs"] == 1
+    assert merged["source_count"] == 2
 
 
 def test_merge_writes_report_next_to_output(tmp_path):
@@ -147,9 +182,13 @@ def test_mock_keeps_same_edge_from_two_papers(tmp_path):
     output = tmp_path / "triples.jsonl"
     subprocess.run([
         sys.executable, str(ROOT / "scripts" / "02_run_extraction.py"),
-        "--from", "json", "--input", str(input_dir), "--out", str(output), "--mock",
+        "--from", "json", "--input", str(input_dir), "--out", str(output),
+        "--mock", "--workers", "2",
     ], check=True, cwd=ROOT, capture_output=True, text=True,
        encoding="utf-8", errors="replace")
     rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
     assert len(rows) == 4
     assert {row["provenance"]["source_id"] for row in rows} == {"pmc:PMC1", "pmc:PMC2"}
+    report = json.loads((tmp_path / "extraction_report.json").read_text(encoding="utf-8"))
+    assert report["workers"] == 2
+    assert report["reproducibility"]["input_manifest_sha256"]

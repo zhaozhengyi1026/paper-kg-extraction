@@ -243,6 +243,10 @@ INTERACTION_RELATIONS = {
     "WM_CONTRAINDICATED_FOR",
 }
 
+SYMMETRIC_INTERACTION_RELATIONS = {
+    "DDI", "HHI", "INTERACTS_WITH", "INCOMPATIBLE_WITH", "ANTAGONIZES",
+}
+
 
 def is_interaction(relation: str) -> bool:
     """判断三元组是否属于药物交互关系。"""
@@ -454,11 +458,22 @@ def cross_source_merge(
         base = dict(reports[0])
         base["provenance"] = dict(base.get("provenance", {}))
         evidence_sources = []
+        evidence_records = []
         for report in reports:
             source_id = (report.get("evidence_source_id") or
                          report.get("provenance", {}).get("source_id", ""))
             if source_id and source_id not in evidence_sources:
                 evidence_sources.append(source_id)
+            evidence_records.append({
+                "source_id": source_id,
+                "edge_id": report.get("edge_id", ""),
+                "evidence_sentence": report.get("evidence_sentence", ""),
+                "confidence": report.get("confidence", 0),
+                "evidence_tier": report.get("evidence_tier", ""),
+                "extraction_model": report.get("extraction_model", ""),
+                "paper_authority_score": report.get("paper_authority_score", 0),
+                "provenance": dict(report.get("provenance", {})),
+            })
         source_count = len(evidence_sources) or len(reports)
 
         # 多源类型一致性
@@ -548,6 +563,7 @@ def cross_source_merge(
         base["paper_authority_score"] = paper_raw_score
         base["paper_cebm_level"] = paper_cebm
         base["evidence_sources"] = evidence_sources
+        base["evidence_records"] = evidence_records
         base.setdefault("provenance", {})["evidence_sources"] = evidence_sources
         base["provenance"]["source_count"] = source_count
 

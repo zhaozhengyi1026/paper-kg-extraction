@@ -17,7 +17,9 @@ from collections import defaultdict
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
-from interaction_credibility import is_interaction, cross_source_merge  # noqa: E402
+from interaction_credibility import (  # noqa: E402
+    SYMMETRIC_INTERACTION_RELATIONS, cross_source_merge, is_interaction,
+)
 
 
 def load_triples(path: str) -> list[dict]:
@@ -55,7 +57,12 @@ def merge_interactions(in_path: str, out_path: str, report_path: str | None = No
         # 但 bidirectional 与任意方向都能合并
         rel = tr.get("relation", "")
         direction = tr.get("qualifiers", {}).get("direction", "")
-        key = (tr.get("head", ""), rel, tr.get("tail", ""), direction)
+        head_key = tr.get("head_id") or tr.get("head", "")
+        tail_key = tr.get("tail_id") or tr.get("tail", "")
+        if rel in SYMMETRIC_INTERACTION_RELATIONS:
+            head_key, tail_key = sorted((head_key, tail_key))
+            direction = ""
+        key = (head_key, rel, tail_key, direction)
         groups[key].append(tr)
 
     single_source = sum(1 for v in groups.values() if len(v) == 1)

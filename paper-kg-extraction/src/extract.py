@@ -287,6 +287,7 @@ def extract_paper(paper: dict, schema, llm, run_id: str,
             print(f"    WARN: LLM 返回无 triples 字段 (got keys: {sorted(resp.keys())})",
                   file=sys.stderr, flush=True)
         triples_list = resp.get("triples", []) or []
+        extraction_model = resp.get("_model_used", "")
         if not isinstance(triples_list, list):
             triples_list = []
         n_triples = len(triples_list)
@@ -303,6 +304,9 @@ def extract_paper(paper: dict, schema, llm, run_id: str,
                               paper_type_map=paper_type_map)
             if edge is None:
                 continue
+            if extraction_model:
+                edge["extraction_model"] = extraction_model
+                edge["provenance"]["extraction_model"] = extraction_model
             if edge["edge_id"] in seen_edges:
                 _bump(stats, "dup_in_run")
                 continue

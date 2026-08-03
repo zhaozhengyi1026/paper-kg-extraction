@@ -18,8 +18,15 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
+import hashlib
+import importlib.metadata
 import json
+import os
+import platform
 import sqlite3
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -143,6 +150,58 @@ def load_processed(path: Path) -> set[str]:
     return processed
 
 
+def extract_one_paper(paper: dict, schema, llm, run_id: str):
+    """Extract one paper without writing shared output files."""
+    paper_stats: dict = {}
+    rejects: list = []
+    warnings: list = []
+    started = time.monotonic()
+    edges = extract_paper(paper, schema, llm, run_id, paper_stats, rejects, warnings)
+    edges = batch_enrich(
+        edges,
+        paper.get("authority_tier", "") or "",
+        paper.get("authority_score", 0) or 0,
+        paper.get("paper_cebm_level", "") or paper.get("evidence_level", "") or "",
+    )
+    had_llm_error = any(r.get("reject_reason") == "llm_error" for r in rejects)
+    if had_llm_error:
+        edges = []
+    return paper, edges, rejects, warnings, paper_stats, had_llm_error, time.monotonic() - started
+
+
+def _sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def reproducibility_metadata(input_manifest: Path) -> dict:
+    try:
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT.parent,
+            text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.SubprocessError):
+        commit = "unknown"
+    dependencies = {}
+    for package in ("openai", "PyYAML", "zhconv", "tqdm"):
+        try:
+            dependencies[package] = importlib.metadata.version(package)
+        except importlib.metadata.PackageNotFoundError:
+            dependencies[package] = "not-installed"
+    schema_hashes = {
+        path.name: _sha256_file(path) for path in sorted((ROOT / "schema").glob("*.yaml"))
+    }
+    return {
+        "git_commit": commit,
+        "python": platform.python_version(),
+        "platform": platform.platform(),
+        "dependencies": dependencies,
+        "prompt_sha256": _sha256_file(ROOT / "src" / "prompts.py"),
+        "schema_sha256": schema_hashes,
+        "input_manifest": str(input_manifest),
+        "input_manifest_sha256": _sha256_file(input_manifest),
+    }
+
+
 def main():
     """Run extraction pipeline."""
     ap = argparse.ArgumentParser()
@@ -155,6 +214,8 @@ def main():
     ap.add_argument("--batch-id", default="batch:local:00000000:manual")
     ap.add_argument("--mock", action="store_true", help="离线确定性抽取（无需 API key，仅冒烟）")
     ap.add_argument("--no-resume", action="store_true", help="不续跑：即使输出文件已存在也重新抽取全部")
+    ap.add_argument("--workers", type=int, default=int(os.environ.get("EXTRACTION_WORKERS", "2")),
+                    help="并发处理论文数；建议 2-3，默认 1")
     args = ap.parse_args()
 
     schema = Schema()
@@ -172,6 +233,8 @@ def main():
         papers = papers_from_json(args.input, args.batch_id, args.limit)
 
     stats: dict = {}
+    accepted_by_model: Counter = Counter()
+    paper_durations: list[float] = []
     n_papers = n_edges = n_rejects = n_warnings = 0
     all_rejects: list = []
     all_warnings: list = []
@@ -224,7 +287,20 @@ def main():
     if seen_ids:
         print(f"断点续跑: 跳过已处理的 {len(seen_ids)} 篇论文", file=sys.stderr, flush=True)
 
-    remaining = total - len(seen_ids)
+    pending_papers = [paper for paper in papers if paper_source_id(paper) not in seen_ids]
+    manifest_path = out_path.parent / "input_manifest.json"
+    manifest_path.write_text(json.dumps({
+        "batch_id": args.batch_id,
+        "papers": [{
+            "source_id": paper_source_id(p),
+            "title": p.get("title", ""),
+            "pmid": p.get("pmid", ""),
+            "pmcid": p.get("pmcid", ""),
+            "doi": p.get("doi", ""),
+        } for p in pending_papers],
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    total = len(pending_papers) + len(seen_ids)
+    remaining = len(pending_papers)
     print()
     print(f"加载 {total} 篇论文，待抽取 {remaining} 篇，开始…", file=sys.stderr, flush=True)
 
@@ -247,16 +323,18 @@ def main():
 
     with out_path.open(open_mode, encoding="utf-8") as fout:
         pi = 0
-        for paper in papers:
+        workers = max(1, min(args.workers, 8))
+        if workers == 1:
+            results = (extract_one_paper(p, schema, llm, run_id) for p in pending_papers)
+            executor = None
+        else:
+            executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="paper-extract")
+            results = executor.map(lambda p: extract_one_paper(p, schema, llm, run_id), pending_papers)
+        for paper, edges, paper_rejects, paper_warns, paper_stats, paper_had_llm_error, paper_elapsed in results:
             sid = paper_source_id(paper)
 
-            if sid and sid in seen_ids:
-                if pbar:
-                    pbar.update(1)
-                    pbar.set_postfix_str("跳过(已处理)", refresh=True)
-                continue
-
             n_papers += 1
+            paper_durations.append(paper_elapsed)
             pi += 1
             sid = paper_source_id(paper)
             if sid:
@@ -276,10 +354,9 @@ def main():
             if pbar:
                 pbar.set_description_str(f"{sid_short} | {title}", refresh=True)
 
-            paper_rejects: list = []
-            paper_warns: list = []
-            edges = extract_paper(paper, schema, llm, run_id, stats,
-                                  paper_rejects, paper_warns)
+            for key, value in paper_stats.items():
+                if isinstance(value, (int, float)):
+                    stats[key] = stats.get(key, 0) + value
 
             if paper_rejects:
                 n_rejects += len(paper_rejects)
@@ -295,34 +372,31 @@ def main():
                     for w in paper_warns:
                         fw.write(json.dumps(w, ensure_ascii=False) + "\n")
 
-            auth_tier = paper.get("authority_tier", "") or ""
-            auth_score = paper.get("authority_score", 0) or 0
-            paper_cebm = paper.get("paper_cebm_level", "") or paper.get("evidence_level", "") or ""
-            edges = batch_enrich(edges, auth_tier, auth_score, paper_cebm)
-
-            paper_had_llm_error = any(
-                r.get("reject_reason") == "llm_error" for r in paper_rejects
-            )
             if paper_had_llm_error:
                 # Do not persist a partial paper: retrying it would otherwise
                 # append duplicate same-paper evidence on the next run.
                 if edges:
                     print(f"      RETRY {sid}: LLM error; discard {len(edges)} partial edges",
                           file=sys.stderr, flush=True)
-                edges = []
-            else:
-                with processed_path.open("a", encoding="utf-8") as checkpoint:
-                    checkpoint.write(json.dumps({
-                        "source_id": sid,
-                        "status": "completed",
-                        "edge_count": len(edges),
-                    }, ensure_ascii=False) + "\n")
-
             # Keep equal edge IDs from different papers. Cross-source merge needs
             # every independent report to compute source_count and provenance.
             for e in edges:
                 fout.write(json.dumps(e, ensure_ascii=False).replace(chr(10), " ") + "\n")
+                accepted_by_model[e.get("extraction_model", "unknown")] += 1
             n_edges += len(edges)
+            # Commit checkpoint only after durable edge output.
+            fout.flush()
+            if hasattr(os, "fsync"):
+                os.fsync(fout.fileno())
+            if not paper_had_llm_error:
+                with processed_path.open("a", encoding="utf-8") as checkpoint:
+                    checkpoint.write(json.dumps({
+                        "source_id": sid, "status": "completed",
+                        "edge_count": len(edges), "elapsed_seconds": round(paper_elapsed, 3),
+                    }, ensure_ascii=False) + "\n")
+                    checkpoint.flush()
+                    if hasattr(os, "fsync"):
+                        os.fsync(checkpoint.fileno())
 
             if pbar:
                 pbar.update(1)
@@ -338,16 +412,18 @@ def main():
                 print(f"[{pi}/{remaining}] {title} -> {len(edges)} 边 (累计 {n_edges}){suffix}",
                       file=sys.stderr, flush=True)
 
-            fout.flush()
             if n_papers % 20 == 0 and not pbar:
                 print(f"  ...{n_papers} 篇 / {n_edges} 边（accepted={stats.get('accepted',0)}）",
                       file=sys.stderr)
+        if executor is not None:
+            executor.shutdown(wait=True)
 
     if pbar:
         pbar.close()
 
-    from collections import Counter
     reject_reasons = Counter(r["reject_reason"] for r in all_rejects)
+    sorted_durations = sorted(paper_durations)
+    p95_index = max(0, int(len(sorted_durations) * 0.95) - 1)
 
     report = {
         "run_id": run_id,
@@ -361,6 +437,17 @@ def main():
         "checkpoint_file": str(processed_path),
         "extraction_models": getattr(llm, "model_chain", [getattr(llm, "model", "mock")]),
         "model_usage": getattr(llm, "usage_counts", {}),
+        "accepted_edges_by_model": dict(accepted_by_model),
+        "model_metrics": (llm.metrics_snapshot() if hasattr(llm, "metrics_snapshot")
+                          else {"model": getattr(llm, "model", "mock"),
+                                "metrics": getattr(llm, "metrics", {})}),
+        "workers": max(1, min(args.workers, 8)),
+        "paper_latency_seconds": {
+            "avg": round(sum(paper_durations) / len(paper_durations), 3) if paper_durations else 0,
+            "p95": round(sorted_durations[p95_index], 3) if sorted_durations else 0,
+            "max": round(max(paper_durations), 3) if paper_durations else 0,
+        },
+        "reproducibility": reproducibility_metadata(manifest_path),
         "reject_stats": stats,
     }
     rep_path = out_path.parent / "extraction_report.json"

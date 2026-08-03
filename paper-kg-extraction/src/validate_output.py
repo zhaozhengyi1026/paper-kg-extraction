@@ -66,6 +66,31 @@ def check_edge(e: dict, schema: Schema) -> list[str]:
         errs.append("char_start/char_end 非法")
     if prov.get("evidence_sentence") != e["evidence_sentence"]:
         errs.append("provenance.evidence_sentence 与顶层不一致")
+    evidence_records = e.get("evidence_records")
+    if evidence_records is not None:
+        if not isinstance(evidence_records, list) or not evidence_records:
+            errs.append("evidence_records 非法")
+        else:
+            record_sources = []
+            for index, record in enumerate(evidence_records):
+                if not isinstance(record, dict):
+                    errs.append(f"evidence_records[{index}] 非对象")
+                    continue
+                source_id = record.get("source_id")
+                sentence = record.get("evidence_sentence")
+                record_prov = record.get("provenance") or {}
+                if not source_id or not sentence:
+                    errs.append(f"evidence_records[{index}] 缺来源或证据")
+                if record_prov.get("source_id") != source_id:
+                    errs.append(f"evidence_records[{index}] source_id 不一致")
+                if record_prov.get("evidence_sentence") != sentence:
+                    errs.append(f"evidence_records[{index}] evidence_sentence 不一致")
+                if source_id and source_id not in record_sources:
+                    record_sources.append(source_id)
+            if e.get("source_count") != len(record_sources):
+                errs.append("source_count 与 evidence_records 不一致")
+            if e.get("evidence_sources") != record_sources:
+                errs.append("evidence_sources 与 evidence_records 不一致")
     # E
     conf = e.get("confidence", 0)
     if not (isinstance(conf, (int, float)) and 0 < conf <= 1):

@@ -23,6 +23,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -58,17 +59,30 @@ except ImportError:
 
 
 # 跨调用的限流保护
-_last_call = 0.0
 _MIN_INTERVAL = 1.0  # 秒
+_rate_lock = threading.Lock()
+_last_calls: dict[str, float] = {}
 
 
-def _rate_limit():
-    global _last_call
-    now = time.time()
-    gap = _MIN_INTERVAL - (now - _last_call)
-    if gap > 0:
-        time.sleep(gap)
-    _last_call = time.time()
+def _rate_limit(provider_key: str):
+    with _rate_lock:
+        now = time.time()
+        last_call = _last_calls.get(provider_key, 0.0)
+        gap = _MIN_INTERVAL - (now - last_call)
+        if gap > 0:
+            time.sleep(gap)
+        _last_calls[provider_key] = time.time()
+
+
+def _retry_after(error) -> float | None:
+    headers = getattr(getattr(error, "response", None), "headers", None)
+    if headers:
+        try:
+            value = headers.get("retry-after") or headers.get("Retry-After")
+            return max(0.0, float(value)) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+    return None
 
 
 class LLMClient:
@@ -78,12 +92,16 @@ class LLMClient:
                  model: str | None = None,
                  temperature: float | None = None):
         self.mock = mock
+        self.model = "mock" if mock else (model or os.environ.get("LLM_MODEL", ""))
+        self.metrics = {"requests": 0, "successes": 0, "failures": 0,
+                        "retries": 0, "rate_limits": 0, "latency_seconds": 0.0}
+        self.metrics.update({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+        self._metrics_lock = threading.Lock()
         if mock:
             return
         # 构造参数优先，环境变量兜底
         self.base_url = (base_url or os.environ.get("LLM_BASE_URL", "")).rstrip("/")
         self.api_key = api_key or os.environ.get("LLM_API_KEY", "")
-        self.model = model or os.environ.get("LLM_MODEL", "")
         self.temperature = (temperature if temperature is not None
                             else float(os.environ.get("LLM_TEMPERATURE", "0") or 0))
         if not (self.base_url and self.api_key and self.model):
@@ -103,13 +121,18 @@ class LLMClient:
         不可重试：401 认证错误、400 参数错误（直接抛）。
         """
         if self.mock:
-            return _mock_extract(user)
-        # 限流保护：两次调用间隔 >= 1s
-        _rate_limit()
+            result = _mock_extract(user)
+            result["_model_used"] = self.model
+            return result
         import random as _random
         use_response_format = os.environ.get("LLM_RESPONSE_FORMAT", "1") not in ("0", "no", "false")
         last = None
         for attempt in range(retries):
+            # Per-provider throttle is shared across concurrent paper workers.
+            _rate_limit(self.base_url)
+            started = time.monotonic()
+            with self._metrics_lock:
+                self.metrics["requests"] += 1
             try:
                 kwargs = dict(
                     model=self.model,
@@ -121,16 +144,39 @@ class LLMClient:
                     kwargs["response_format"] = {"type": "json_object"}
                 resp = self._client.chat.completions.create(**kwargs)
                 txt = resp.choices[0].message.content or "{}"
-                return _loads_lenient(txt)
+                result = _loads_lenient(txt)
+                result["_model_used"] = self.model
+                usage = getattr(resp, "usage", None)
+                with self._metrics_lock:
+                    self.metrics["successes"] += 1
+                    self.metrics["latency_seconds"] += time.monotonic() - started
+                    for field in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                        self.metrics[field] += int(getattr(usage, field, 0) or 0)
+                return result
             except Exception as e:
                 last = e
                 err_str = str(e).lower()
+                with self._metrics_lock:
+                    self.metrics["failures"] += 1
+                    self.metrics["latency_seconds"] += time.monotonic() - started
+                    if "429" in err_str or "rate limit" in err_str:
+                        self.metrics["rate_limits"] += 1
                 if any(kw in err_str for kw in ("401", "unauthorized", "403", "forbidden",
                                                   "invalid_request_error", "invalid_api_key")):
                     raise RuntimeError(f"LLM 不可重试错误: {e}") from e
 
+                # Connection failures rarely benefit from five long attempts;
+                # switch to the configured fallback after two.
+                if attempt >= 1 and any(kw in err_str for kw in
+                                        ("timeout", "timed out", "connection", "dns")):
+                    break
+
                 if attempt < retries - 1:
-                    delay = 2.0 * (attempt + 1) + _random.uniform(0, 3)
+                    delay = _retry_after(e)
+                    if delay is None:
+                        delay = 2.0 * (attempt + 1) + _random.uniform(0, 3)
+                    with self._metrics_lock:
+                        self.metrics["retries"] += 1
                     print(f"      ⚠ LLM 重试 {attempt+1}/{retries}，{delay:.0f}s 后: "
                           f"{str(e)[:80]}",
                           file=sys.stderr, flush=True)
@@ -147,22 +193,55 @@ class FallbackLLMClient:
         self.model = primary.model
         self.model_chain = [primary.model, fallback.model]
         self.usage_counts = {primary.model: 0, fallback.model: 0}
+        self.fallback_reasons: dict[str, int] = {}
+        self._consecutive_primary_failures = 0
+        self._circuit_open_until = 0.0
+        self._lock = threading.Lock()
+        self._failure_threshold = int(os.environ.get("LLM_CIRCUIT_FAILURES", "3"))
+        self._cooldown = float(os.environ.get("LLM_CIRCUIT_COOLDOWN", "300"))
 
     def complete_json(self, system: str, user: str, retries: int = 5) -> dict:
-        try:
-            result = self.primary.complete_json(system, user, retries=retries)
-            self.usage_counts[self.primary.model] += 1
-            return result
-        except Exception as primary_error:
-            print(
-                f"      ⚠ 主抽取模型 {self.primary.model} 失败，切换到 {self.fallback.model}: "
-                f"{str(primary_error)[:120]}",
-                file=sys.stderr,
-                flush=True,
-            )
+        with self._lock:
+            circuit_open = time.monotonic() < self._circuit_open_until
+        primary_error_text = ""
+        if not circuit_open:
+            try:
+                result = self.primary.complete_json(system, user, retries=retries)
+                with self._lock:
+                    self.usage_counts[self.primary.model] += 1
+                    self._consecutive_primary_failures = 0
+                return result
+            except Exception as primary_error:
+                primary_error_text = str(primary_error)
+                reason = type(primary_error).__name__
+                with self._lock:
+                    self._consecutive_primary_failures += 1
+                    self.fallback_reasons[reason] = self.fallback_reasons.get(reason, 0) + 1
+                    if self._consecutive_primary_failures >= self._failure_threshold:
+                        self._circuit_open_until = time.monotonic() + self._cooldown
+        else:
+            primary_error_text = "SenseNova circuit breaker is open"
+            with self._lock:
+                self.fallback_reasons["circuit_open"] = self.fallback_reasons.get("circuit_open", 0) + 1
+        print(
+            f"      ⚠ 主抽取模型 {self.primary.model} 失败，切换到 {self.fallback.model}: "
+            f"{primary_error_text[:120]}",
+            file=sys.stderr,
+            flush=True,
+        )
         result = self.fallback.complete_json(system, user, retries=retries)
-        self.usage_counts[self.fallback.model] += 1
+        with self._lock:
+            self.usage_counts[self.fallback.model] += 1
         return result
+
+    def metrics_snapshot(self) -> dict:
+        return {
+            "usage": dict(self.usage_counts),
+            "fallback_reasons": dict(self.fallback_reasons),
+            "primary": dict(self.primary.metrics),
+            "fallback": dict(self.fallback.metrics),
+            "circuit_open": time.monotonic() < self._circuit_open_until,
+        }
 
 
 def _loads_lenient(txt: str) -> dict:
@@ -275,9 +354,13 @@ def create_nli_client(fallback_llm=None):
         NLI_API_KEY    NLI 模型 API key
         NLI_MODEL      NLI 模型名称
     """
-    nli_url = os.environ.get("NLI_BASE_URL", "https://token.sensenova.cn/v1")
-    nli_key = os.environ.get("NLI_API_KEY") or os.environ.get("SENSENOVA_API_KEY", "")
-    nli_model = os.environ.get("NLI_MODEL", "sensenova-6.7-flash-lite")
+    nli_model = os.environ.get("NLI_MODEL", "")
+    # Unless an explicit independent NLI model is configured, use the
+    # DeepSeek extraction fallback to avoid self-review by SenseNova.
+    if not nli_model and fallback_llm is not None:
+        return getattr(fallback_llm, "fallback", fallback_llm)
+    nli_url = os.environ.get("NLI_BASE_URL", os.environ.get("LLM_BASE_URL", ""))
+    nli_key = os.environ.get("NLI_API_KEY") or os.environ.get("LLM_API_KEY", "")
 
     try:
         if not nli_key:
