@@ -32,7 +32,7 @@ def load_triples(path: str) -> list[dict]:
     return triples
 
 
-def merge_interactions(in_path: str, out_path: str):
+def merge_interactions(in_path: str, out_path: str, report_path: str | None = None):
     triples = load_triples(in_path)
     print(f"读入 {len(triples)} 条三元组", file=sys.stderr)
 
@@ -94,7 +94,7 @@ def merge_interactions(in_path: str, out_path: str):
     print(f"  (非交互 {len(non_interactions)} + 合并交互 {len(merged_interactions)})",
           file=sys.stderr)
 
-    return {
+    report = {
         "ics_version": "2.0",
         "input_triples": len(triples),
         "input_interactions": len(interactions),
@@ -105,13 +105,18 @@ def merge_interactions(in_path: str, out_path: str):
         "ics_score_range": {"min": min(scores) if scores else 0, "max": max(scores) if scores else 0, "avg": sum(scores)/len(scores) if scores else 0},
         "output_total": len(all_out),
     }
+    report_file = Path(report_path) if report_path else Path(out_path).with_name("merge_report.json")
+    report_file.parent.mkdir(parents=True, exist_ok=True)
+    report_file.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    return report
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="跨论文合并交互三元组 v2.0")
     ap.add_argument("input", help="输入 JSONL 文件 (paper_triples.jsonl)")
     ap.add_argument("--out", required=True, help="输出 JSONL 路径")
+    ap.add_argument("--report", help="报告 JSON 路径（默认与输出文件同目录）")
     args = ap.parse_args()
 
-    report = merge_interactions(args.input, args.out)
+    report = merge_interactions(args.input, args.out, args.report)
     print(json.dumps(report, ensure_ascii=False, indent=2))

@@ -152,27 +152,28 @@ case "$1" in
   bridge)
     N=${2:-10}
     echo "=== Step 4: 桥接: papers → JSON ($N 篇) ==="
-    python $BRIDGE --db $DB --out $JSON_DIR --limit $N
+    python $BRIDGE --db $DB --out $JSON_DIR --limit $N --clean
     ;;
 
   extract)
     shift
-    # 确定输出路径: 如果指定了 --tag 则用时间戳目录，否则用传统路径
-    _out=$OUT_LEGACY
+    _has_out=""
     _batch_id="batch:pubmed:$(date +%Y%m%d):auto"
     for _a in "$@"; do
         case "$_a" in
-            --out) _out="" ;;&   # 用户显式指定了 --out，跳过默认
+            --out|--out=*) _has_out="1" ;;
         esac
     done
     echo "=== Step 5: 抽取知识图谱 (自动混合摘要+全文) ==="
     echo "注: JSON 目录中同时包含摘要和全文，全文优先"
-    echo "输出: $_out"
     cd $EXTRACTOR
-    python scripts/02_run_extraction.py \
-      --from json --input data/papers_json \
-      --out "$_out" \
-      --batch-id "$_batch_id" "$@"
+    if [ -n "$_has_out" ]; then
+        python scripts/02_run_extraction.py --from json --input data/papers_json \
+          --batch-id "$_batch_id" "$@"
+    else
+        python scripts/02_run_extraction.py --from json --input data/papers_json \
+          --out "$OUT_LEGACY" --batch-id "$_batch_id" "$@"
+    fi
     ;;
 
   extract-fulltext)
@@ -207,7 +208,8 @@ case "$1" in
     echo "输入: $_input"
     echo "输出: $_merged_out"
     cd $EXTRACTOR
-    python scripts/04_merge_interactions.py "$_input" --out "$_merged_out"
+    python scripts/04_merge_interactions.py "$_input" --out "$_merged_out" \
+      --report "$(dirname "$_merged_out")/merge_report.json"
     ;;
 
   validate)
@@ -264,6 +266,7 @@ case "$1" in
     ALL_MERGED=$ALL_RUN_DIR/paper_triples_merged.jsonl
     ALL_REPORT=$ALL_RUN_DIR/extraction_report.json
     ALL_MERGE_REPORT=$ALL_RUN_DIR/merge_report.json
+    ALL_JSON_DIR=$ALL_RUN_DIR/papers_json
 
     mkdir -p "$ALL_RUN_DIR"
 
@@ -279,15 +282,16 @@ case "$1" in
     bash $0 download "$QUERY" $N      # 1. PubMed 搜索 → 摘要
     bash $0 enrich                     # 2. NCBI ID Converter → 找 PMCID
     bash $0 grade                      # 3. 权威度评分 (CEBM+期刊+引用+时效)
-    bash $0 bridge $N                  # 4. 摘要 → JSON (供抽取)
-    bash $0 batch-pmc                  # 5. 有 PMCID → 自动下载全文 (覆盖摘要JSON)
+    bash $0 batch-pmc                  # 4. 有 PMCID → 自动下载全文
+    # 独立输入快照；newest-first 确保选择本次下载后最近的 N 篇。
+    python $BRIDGE --db $DB --out "$ALL_JSON_DIR" --limit $N --newest-first --clean
 
     # 6. LLM 抽取三元组
     echo "=== Step 6/9: 抽取知识图谱 (进度条↓) ==="
     echo "输出: $ALL_OUT"
     cd $EXTRACTOR
     python scripts/02_run_extraction.py \
-      --from json --input data/papers_json \
+      --from json --input "$ALL_JSON_DIR" \
       --out "$ALL_OUT" \
       --batch-id "batch:pubmed:$ALL_TAG" $MOCK
 
@@ -296,14 +300,14 @@ case "$1" in
     echo "输入: $ALL_OUT"
     echo "输出: $ALL_MERGED"
     cd $EXTRACTOR
-    python scripts/04_merge_interactions.py "$ALL_OUT" --out "$ALL_MERGED"
-    # 保存合并报告
-    cp "$EXTRACTOR/out/candidate_kg/merge_report.json" "$ALL_MERGE_REPORT" 2>/dev/null || true
+    python scripts/04_merge_interactions.py "$ALL_OUT" --out "$ALL_MERGED" \
+      --report "$ALL_MERGE_REPORT"
 
     # 8. 验收自检
     echo "=== Step 8: 验收自检 ==="
     cd $EXTRACTOR
     python scripts/03_validate.py "$ALL_OUT"
+    python scripts/03_validate.py "$ALL_MERGED"
 
     # 9. 建立 latest 软链接
     rm -f "$LATEST_LINK"
@@ -366,6 +370,8 @@ case "$1" in
     ALL_RUN_DIR=$RUN_BASE/$ALL_TAG
     ALL_OUT=$ALL_RUN_DIR/paper_triples.jsonl
     ALL_MERGED=$ALL_RUN_DIR/paper_triples_merged.jsonl
+    ALL_MERGE_REPORT=$ALL_RUN_DIR/merge_report.json
+    ALL_JSON_DIR=$ALL_RUN_DIR/papers_json
     mkdir -p "$ALL_RUN_DIR"
 
     # ── 检测断点续跑状态 ──
@@ -401,36 +407,37 @@ case "$1" in
     python $TOOLS/evidence_grader.py --force
     echo ""
 
-    # ── Step 2: 桥接全部论文 (总是重跑，秒级) ──
-    echo "=== Step 2/6: 桥接全部论文 → JSON ==="
-    python $TOOLS/bridge_papers_to_json.py --db $DB --out $JSON_DIR --limit 0
-    echo ""
-
-    # -- Step 3: 下载 PMC OA 全文 (有 PMCID -> 自动覆盖摘要 JSON) --
-    echo "=== Step 3/6: 下载 PMC OA 全文 (自动跳过无全文/非OA) ==="
+    # ── Step 2: 下载 PMC OA 全文 ──
+    echo "=== Step 2/6: 下载 PMC OA 全文 (自动跳过无全文/非OA) ==="
     cd $BASE
     python $TOOLS/batch_download_pmc.py
     echo ""
 
+    # ── Step 3: 创建本次运行的独立输入快照 ──
+    echo "=== Step 3/6: 桥接全部论文 → 独立 JSON 快照 ==="
+    python $TOOLS/bridge_papers_to_json.py --db $DB --out "$ALL_JSON_DIR" --limit 0 --clean
+    echo ""
 
     # ── Step 4: LLM 抽取 (tqdm 进度条，需在 conda activate 后运行) ──
     echo "=== Step 4/6: 抽取知识图谱 (进度条↓) ==="
     echo "输出: $ALL_OUT"
     cd $EXTRACTOR
     python scripts/02_run_extraction.py \
-      --from json --input data/papers_json \
+      --from json --input "$ALL_JSON_DIR" \
       --out "$ALL_OUT" \
       --batch-id "batch:pubmed:$ALL_TAG" $MOCK $NO_RESUME
     echo ""
 
     # ── Step 5: 跨论文合并 + ICS v2.0 ──
     echo "=== Step 5/6: 合并交互 + ICS v2.0 评分 ==="
-    python scripts/04_merge_interactions.py "$ALL_OUT" --out "$ALL_MERGED"
+    python scripts/04_merge_interactions.py "$ALL_OUT" --out "$ALL_MERGED" \
+      --report "$ALL_MERGE_REPORT"
     echo ""
 
     # ── Step 6: 验收 ──
     echo "=== Step 6/6: 验收自检 ==="
     python scripts/03_validate.py "$ALL_OUT"
+    python scripts/03_validate.py "$ALL_MERGED"
     echo ""
 
     # ── latest 链接 ──

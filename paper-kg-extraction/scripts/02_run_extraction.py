@@ -117,6 +117,32 @@ def papers_from_json(path: str, batch_id: str, limit: int = 0):
                 return
 
 
+def paper_source_id(paper: dict) -> str:
+    """Return the same canonical source ID used by segment_paper()."""
+    if paper.get("source_id"):
+        return str(paper["source_id"])
+    for key, prefix in (("pmcid", "pmc:"), ("pmid", "pmid:"),
+                        ("doi", "doi:"), ("nct_id", "nct:")):
+        if paper.get(key):
+            return f"{prefix}{paper[key]}"
+    return "unknown:0"
+
+
+def load_processed(path: Path) -> set[str]:
+    """Load successful paper checkpoints; malformed trailing lines are ignored."""
+    processed = set()
+    if not path.exists():
+        return processed
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            item = json.loads(line)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if item.get("status") == "completed" and item.get("source_id"):
+            processed.add(item["source_id"])
+    return processed
+
+
 def main():
     """Run extraction pipeline."""
     ap = argparse.ArgumentParser()
@@ -151,6 +177,7 @@ def main():
     all_warnings: list = []
     rejects_path = out_path.parent / (out_path.stem + "_rejects.jsonl")
     warns_path = out_path.parent / (out_path.stem + "_warnings.jsonl")
+    processed_path = out_path.parent / (out_path.stem + "_processed.jsonl")
 
     # Count papers for progress display
     if args.src == "json" and args.input:
@@ -161,8 +188,9 @@ def main():
 
     # Resume: read existing output to skip already-processed papers
     seen_ids = set()
-    global_edge_ids: set[str] = set()
     errored_ids = set()
+    if not args.no_resume:
+        seen_ids.update(load_processed(processed_path))
     if not args.no_resume and out_path.exists():
         try:
             for line in out_path.read_text(encoding="utf-8").strip().splitlines():
@@ -172,9 +200,6 @@ def main():
                 sid = obj.get("evidence_source_id") or obj.get("provenance", {}).get("source_id", "")
                 if sid:
                     seen_ids.add(sid)
-                eid = obj.get("edge_id", "")
-                if eid:
-                    global_edge_ids.add(eid)
         except Exception:
             pass
         if rejects_path.exists():
@@ -203,9 +228,11 @@ def main():
     print()
     print(f"加载 {total} 篇论文，待抽取 {remaining} 篇，开始…", file=sys.stderr, flush=True)
 
-    open_mode = "a" if (seen_ids and not args.no_resume) else "w"
-    if open_mode == "w" and rejects_path.exists():
-        rejects_path.unlink()
+    open_mode = "a" if (out_path.exists() and not args.no_resume) else "w"
+    if open_mode == "w":
+        for artifact in (rejects_path, warns_path, processed_path):
+            if artifact.exists():
+                artifact.unlink()
 
     if HAS_TQDM:
         pbar = tqdm(
@@ -221,7 +248,7 @@ def main():
     with out_path.open(open_mode, encoding="utf-8") as fout:
         pi = 0
         for paper in papers:
-            sid = paper.get("source_id") or paper.get("pmid") or paper.get("pmcid") or paper.get("doi", "")
+            sid = paper_source_id(paper)
 
             if sid and sid in seen_ids:
                 if pbar:
@@ -231,7 +258,7 @@ def main():
 
             n_papers += 1
             pi += 1
-            sid = paper.get("pmcid") or paper.get("pmid") or paper.get("doi") or ""
+            sid = paper_source_id(paper)
             if sid:
                 sid_short = sid[:15]
             else:
@@ -273,22 +300,29 @@ def main():
             paper_cebm = paper.get("paper_cebm_level", "") or paper.get("evidence_level", "") or ""
             edges = batch_enrich(edges, auth_tier, auth_score, paper_cebm)
 
-            new_edges = []
-            dup_global = 0
-            for e in edges:
-                eid = e.get("edge_id", "")
-                if eid and eid in global_edge_ids:
-                    dup_global += 1
-                    continue
-                global_edge_ids.add(eid)
-                new_edges.append(e)
-            if dup_global:
-                stats["dup_global"] = stats.get("dup_global", 0) + dup_global
-                print(f"      SKIP {dup_global} 条全局重复", file=sys.stderr, flush=True)
+            paper_had_llm_error = any(
+                r.get("reject_reason") == "llm_error" for r in paper_rejects
+            )
+            if paper_had_llm_error:
+                # Do not persist a partial paper: retrying it would otherwise
+                # append duplicate same-paper evidence on the next run.
+                if edges:
+                    print(f"      RETRY {sid}: LLM error; discard {len(edges)} partial edges",
+                          file=sys.stderr, flush=True)
+                edges = []
+            else:
+                with processed_path.open("a", encoding="utf-8") as checkpoint:
+                    checkpoint.write(json.dumps({
+                        "source_id": sid,
+                        "status": "completed",
+                        "edge_count": len(edges),
+                    }, ensure_ascii=False) + "\n")
 
-            for e in new_edges:
+            # Keep equal edge IDs from different papers. Cross-source merge needs
+            # every independent report to compute source_count and provenance.
+            for e in edges:
                 fout.write(json.dumps(e, ensure_ascii=False).replace(chr(10), " ") + "\n")
-            n_edges += len(new_edges)
+            n_edges += len(edges)
 
             if pbar:
                 pbar.update(1)
@@ -324,6 +358,7 @@ def main():
         "reject_reasons": dict(reject_reasons),
         "elapsed": _fmt_elapsed(time.time() - _t0),
         "schema_version": schema.schema_version,
+        "checkpoint_file": str(processed_path),
         "reject_stats": stats,
     }
     rep_path = out_path.parent / "extraction_report.json"

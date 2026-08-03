@@ -452,7 +452,14 @@ def cross_source_merge(
             continue
 
         base = dict(reports[0])
-        source_count = len(reports)
+        base["provenance"] = dict(base.get("provenance", {}))
+        evidence_sources = []
+        for report in reports:
+            source_id = (report.get("evidence_source_id") or
+                         report.get("provenance", {}).get("source_id", ""))
+            if source_id and source_id not in evidence_sources:
+                evidence_sources.append(source_id)
+        source_count = len(evidence_sources) or len(reports)
 
         # 多源类型一致性
         types = {r.get("qualifiers", {}).get("interaction_type", "") for r in reports}
@@ -540,6 +547,9 @@ def cross_source_merge(
         base["paper_authority_tier"] = paper_tier
         base["paper_authority_score"] = paper_raw_score
         base["paper_cebm_level"] = paper_cebm
+        base["evidence_sources"] = evidence_sources
+        base.setdefault("provenance", {})["evidence_sources"] = evidence_sources
+        base["provenance"]["source_count"] = source_count
 
         merged.append(base)
 
