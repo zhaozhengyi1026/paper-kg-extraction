@@ -117,6 +117,53 @@ case "$1" in
     echo "  bash run_pipeline.sh batch-pmc  # 批量下载全文"
     ;;
 
+  download-full)
+    QUERY=${2:-"Astragalus membranaceus"}
+    N=${3:-10}
+    echo "=== 完整采集: PubMed 摘要 + PMCID + PMC OA 全文 ==="
+    bash "$0" download "$QUERY" "$N"
+    bash "$0" enrich
+    bash "$0" batch-pmc
+    echo "=== 完整采集结束；无可用全文的论文保留摘要 ==="
+    ;;
+
+  download-batch)
+    QUERY_FILE=${2:-queries.tsv}
+    if [ ! -f "$QUERY_FILE" ]; then
+        echo "错误: 找不到查询表 $QUERY_FILE"
+        echo "格式: 第一列 query，第二列 limit，以 Tab 分隔；可包含表头"
+        exit 2
+    fi
+    echo "=== 批量采集查询表: $QUERY_FILE ==="
+    _line_no=0
+    while IFS=$'\t' read -r QUERY N _rest || [ -n "$QUERY" ]; do
+        _line_no=$((_line_no + 1))
+        QUERY=${QUERY%$'\r'}
+        N=${N%$'\r'}
+        [ -z "$QUERY" ] && continue
+        case "$QUERY" in \#*) continue ;; esac
+        if [ "$_line_no" -eq 1 ] && [ "$QUERY" = "query" ]; then
+            continue
+        fi
+        N=${N:-100}
+        case "$N" in
+            *[!0-9]*) echo "错误: 第 $_line_no 行 limit 不是整数: $N"; exit 2 ;;
+        esac
+        echo ""
+        echo "=== [$_line_no] 下载: $QUERY (limit=$N) ==="
+        bash "$0" download "$QUERY" "$N"
+    done < "$QUERY_FILE"
+
+    echo ""
+    echo "=== 所有查询完成，统一补全 PMCID ==="
+    bash "$0" enrich
+    echo ""
+    echo "=== 下载所有可用 PMC OA 全文 ==="
+    bash "$0" batch-pmc
+    echo ""
+    echo "=== 批量采集完成；无全文论文保留 PubMed 摘要 ==="
+    ;;
+
   pmc-download)
     PMCID=${2:-"PMC8257355"}
     echo "=== 下载单篇 PMC OA 全文: $PMCID ==="
@@ -461,7 +508,7 @@ case "$1" in
     ;;
 
   *)
-    echo "用法: $0 {download|enrich|batch-pmc|pmc-download|grade|bridge|extract|merge-interactions|extract-fulltext|validate|status|list-runs|all|extract-all} [参数]"
+    echo "用法: $0 {download|download-full|download-batch|enrich|batch-pmc|pmc-download|grade|bridge|extract|merge-interactions|extract-fulltext|validate|status|list-runs|all|extract-all} [参数]"
     echo ""
     echo "  v5 时间戳归档: 每次 all 运行自动创建独立目录，不再覆盖历史"
     echo ""
@@ -482,6 +529,8 @@ case "$1" in
     echo ""
     echo "  分步:"
     echo "    download \"查询词\" N            搜索并下载 PubMed 摘要"
+    echo "    download-full \"查询词\" N       单查询: 摘要 + PMCID + 可用全文"
+    echo "    download-batch queries.tsv        批量查询后统一补 PMCID/下载全文"
     echo "    enrich                          查找真实 PMCID（NCBI ID Converter）"
     echo "    batch-pmc [--limit N]           批量下载所有可用 PMC OA 全文"
     echo "    pmc-download PMC1234567         下载单篇 PMC OA 全文"

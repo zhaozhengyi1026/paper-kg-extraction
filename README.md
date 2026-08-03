@@ -17,6 +17,9 @@
 ## 快速开始
 
 ```bash
+# 批量采集：查询表 → 摘要 → PMCID → 可用 PMC 全文
+bash run_pipeline.sh download-batch queries.tsv
+
 # 1. 配置
 cp .env.example .env
 # 编辑 .env，填入 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL
