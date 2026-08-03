@@ -1,0 +1,48 @@
+query	limit
+("Astragalus membranaceus"[Title/Abstract] OR "Astragalus mongholicus"[Title/Abstract] OR Huangqi[Title/Abstract])	300
+("Astragalus membranaceus"[Title/Abstract] OR Huangqi[Title/Abstract]) AND ("diabetic nephropathy"[Title/Abstract] OR "diabetic kidney disease"[Title/Abstract])	300
+("Astragalus membranaceus"[Title/Abstract] OR Huangqi[Title/Abstract]) AND ("chronic kidney disease"[Title/Abstract] OR "renal failure"[Title/Abstract] OR "kidney injury"[Title/Abstract])	250
+("Astragalus membranaceus"[Title/Abstract] OR Huangqi[Title/Abstract]) AND (proteinuria[Title/Abstract] OR albuminuria[Title/Abstract] OR podocyte[Title/Abstract])	200
+("Astragalus membranaceus"[Title/Abstract] OR Huangqi[Title/Abstract]) AND ("renal fibrosis"[Title/Abstract] OR nephroprotective[Title/Abstract] OR renoprotection[Title/Abstract])	200
+("Astragalus membranaceus"[Title/Abstract] OR Huangqi[Title/Abstract]) AND (diabetes[Title/Abstract] OR hyperglycemia[Title/Abstract] OR "insulin resistance"[Title/Abstract])	250
+("Astragalus membranaceus"[Title/Abstract] OR Huangqi[Title/Abstract]) AND (cardiovascular[Title/Abstract] OR cardioprotective[Title/Abstract] OR "heart failure"[Title/Abstract])	200
+("Astragalus membranaceus"[Title/Abstract] OR Huangqi[Title/Abstract]) AND (liver[Title/Abstract] OR hepatic[Title/Abstract] OR hepatoprotective[Title/Abstract])	150
+("Astragalus membranaceus"[Title/Abstract] OR Huangqi[Title/Abstract]) AND (cancer[Title/Abstract] OR tumor[Title/Abstract] OR chemotherapy[Title/Abstract])	250
+("Astragalus membranaceus"[Title/Abstract] OR Huangqi[Title/Abstract]) AND (immune[Title/Abstract] OR immunomodulatory[Title/Abstract] OR inflammation[Title/Abstract])	250
+("astragaloside IV"[Title/Abstract] OR AS-IV[Title/Abstract] OR astragaloside[Title/Abstract])	300
+("astragaloside IV"[Title/Abstract] OR AS-IV[Title/Abstract]) AND (kidney[Title/Abstract] OR renal[Title/Abstract] OR nephropathy[Title/Abstract])	250
+("astragaloside IV"[Title/Abstract] OR AS-IV[Title/Abstract]) AND (cardiac[Title/Abstract] OR cardiovascular[Title/Abstract] OR myocardial[Title/Abstract])	200
+("astragaloside IV"[Title/Abstract] OR AS-IV[Title/Abstract]) AND (brain[Title/Abstract] OR cerebral[Title/Abstract] OR neurological[Title/Abstract])	150
+("Astragalus polysaccharide"[Title/Abstract] OR "Astragalus polysaccharides"[Title/Abstract] OR APS[Title/Abstract])	300
+("Astragalus polysaccharide"[Title/Abstract] OR "Astragalus polysaccharides"[Title/Abstract]) AND (diabetes[Title/Abstract] OR kidney[Title/Abstract] OR renal[Title/Abstract])	200
+(calycosin[Title/Abstract] OR "calycosin-7-O-glucoside"[Title/Abstract]) AND (Astragalus[Title/Abstract] OR Huangqi[Title/Abstract])	150
+(formononetin[Title/Abstract] OR ononin[Title/Abstract]) AND (Astragalus[Title/Abstract] OR Huangqi[Title/Abstract])	150
+("Astragalus flavonoids"[Title/Abstract] OR "total flavonoids of Astragalus"[Title/Abstract])	150
+("Astragalus saponin"[Title/Abstract] OR "Astragalus saponins"[Title/Abstract])	150
+(Astragalus[Title/Abstract] OR Huangqi[Title/Abstract]) AND ("oxidative stress"[Title/Abstract] OR Nrf2[Title/Abstract] OR HO-1[Title/Abstract])	250
+(Astragalus[Title/Abstract] OR Huangqi[Title/Abstract]) AND ("TGF-beta"[Title/Abstract] OR TGF-β[Title/Abstract] OR Smad[Title/Abstract] OR fibrosis[Title/Abstract])	250
+(Astragalus[Title/Abstract] OR Huangqi[Title/Abstract]) AND ("NF-kappa B"[Title/Abstract] OR NF-κB[Title/Abstract] OR inflammation[Title/Abstract])	250
+(Astragalus[Title/Abstract] OR Huangqi[Title/Abstract]) AND (PI3K[Title/Abstract] OR Akt[Title/Abstract] OR mTOR[Title/Abstract])	200
+(Astragalus[Title/Abstract] OR Huangqi[Title/Abstract]) AND (AMPK[Title/Abstract] OR SIRT1[Title/Abstract] OR PGC-1alpha[Title/Abstract])	150
+(Astragalus[Title/Abstract] OR Huangqi[Title/Abstract]) AND (apoptosis[Title/Abstract] OR autophagy[Title/Abstract] OR mitophagy[Title/Abstract])	200
+(Astragalus[Title/Abstract] OR Huangqi[Title/Abstract]) AND (ferroptosis[Title/Abstract] OR pyroptosis[Title/Abstract] OR "cell death"[Title/Abstract])	150
+(Astragalus[Title/Abstract] OR Huangqi[Title/Abstract]) AND (microbiota[Title/Abstract] OR microbiome[Title/Abstract] OR "gut flora"[Title/Abstract])	150
+(Astragalus[Title/Abstract] OR Huangqi[Title/Abstract]) AND (metabolomics[Title/Abstract] OR proteomics[Title/Abstract] OR transcriptomics[Title/Abstract])	150
+(Astragalus[Title/Abstract] OR Huangqi[Title/Abstract]) AND ("network pharmacology"[Title/Abstract] OR "molecular docking"[Title/Abstract])	200
+(Astragalus[Title/Abstract] OR Huangqi[Title/Abstract]) AND (pharmacokinetic[Title/Abstract] OR bioavailability[Title/Abstract] OR metabolism[Title/Abstract])	200
+(Astragalus[Title/Abstract] OR Huangqi[Title/Abstract]) AND (CYP450[Title/Abstract] OR CYP3A4[Title/Abstract] OR CYP2C9[Title/Abstract] OR CYP2D6[Title/Abstract])	150
+(Astragalus[Title/Abstract] OR Huangqi[Title/Abstract]) AND ("P-glycoprotein"[Title/Abstract] OR P-gp[Title/Abstract] OR transporter[Title/Abstract])	150
+(Astragalus[Title/Abstract] OR Huangqi[Title/Abstract]) AND ("herb-drug interaction"[Title/Abstract] OR "drug interaction"[Title/Abstract] OR interaction[Title/Abstract])	250
+(Astragalus[Title/Abstract] OR Huangqi[Title/Abstract]) AND (warfarin[Title/Abstract] OR anticoagulant[Title/Abstract] OR antiplatelet[Title/Abstract])	100
+(Astragalus[Title/Abstract] OR Huangqi[Title/Abstract]) AND (cyclosporine[Title/Abstract] OR tacrolimus[Title/Abstract] OR immunosuppressant[Title/Abstract])	100
+(Astragalus[Title/Abstract] OR Huangqi[Title/Abstract]) AND (metformin[Title/Abstract] OR insulin[Title/Abstract] OR antidiabetic[Title/Abstract])	150
+(Astragalus[Title/Abstract] OR Huangqi[Title/Abstract]) AND (chemotherapy[Title/Abstract] OR cisplatin[Title/Abstract] OR doxorubicin[Title/Abstract] OR paclitaxel[Title/Abstract])	150
+(Astragalus[Title/Abstract] OR Huangqi[Title/Abstract]) AND (toxicity[Title/Abstract] OR toxicology[Title/Abstract] OR safety[Title/Abstract] OR adverse[Title/Abstract])	200
+(Astragalus[Title/Abstract] OR Huangqi[Title/Abstract]) AND ("randomized controlled trial"[Title/Abstract] OR randomised[Title/Abstract] OR placebo[Title/Abstract])	250
+(Astragalus[Title/Abstract] OR Huangqi[Title/Abstract]) AND ("systematic review"[Title/Abstract] OR "meta-analysis"[Title/Abstract])	250
+(Astragalus[Title/Abstract] OR Huangqi[Title/Abstract]) AND (cohort[Title/Abstract] OR "case-control"[Title/Abstract] OR observational[Title/Abstract])	150
+("Buyang Huanwu"[Title/Abstract] OR "Bu Yang Huan Wu"[Title/Abstract]) AND (Astragalus[Title/Abstract] OR Huangqi[Title/Abstract])	150
+("Danggui Buxue"[Title/Abstract] OR "Dang Gui Bu Xue"[Title/Abstract]) AND (Astragalus[Title/Abstract] OR Huangqi[Title/Abstract])	150
+(Yupingfeng[Title/Abstract] OR "Yu Ping Feng"[Title/Abstract]) AND (Astragalus[Title/Abstract] OR Huangqi[Title/Abstract])	150
+("Huangqi Guizhi Wuwu"[Title/Abstract] OR "Huang Qi Gui Zhi Wu Wu"[Title/Abstract])	100
+(Astragalus[Title/Abstract] OR Huangqi[Title/Abstract]) AND (formula[Title/Abstract] OR decoction[Title/Abstract] OR prescription[Title/Abstract])	200
