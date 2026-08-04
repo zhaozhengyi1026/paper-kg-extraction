@@ -25,6 +25,20 @@ def export_papers(db_path: str, out_dir: str, limit: int = 0,
     fulltext_columns = ("f.sections AS fulltext_sections, f.license AS fulltext_license "
                         if has_fulltext else
                         "NULL AS fulltext_sections, NULL AS fulltext_license ")
+    order_by = "rowid DESC, pmid DESC" if newest_first else "pmid"
+    params: tuple[int, ...] = ()
+    if limit > 0:
+        # Limit papers before the PMC join. On a full PubMed database the join
+        # column may not be indexed, so joining the complete corpus first can
+        # turn a 200-paper export into a long-running scan.
+        selected_columns = "rowid AS _bridge_rowid, *" if newest_first else "*"
+        paper_source = (
+            f"(SELECT {selected_columns} FROM papers "
+            f"ORDER BY {order_by} LIMIT ?) p"
+        )
+        params = (limit,)
+    else:
+        paper_source = "papers p"
     sql = (
         "SELECT p.pmid, p.pmcid, p.doi, p.title, p.abstract, "
         f"{paper_column('license')}, {paper_column('evidence_level')}, "
@@ -32,15 +46,17 @@ def export_papers(db_path: str, out_dir: str, limit: int = 0,
         f"{paper_column('authority_tier')}, "
         f"{paper_column('authority_score', '0')}, "
         + fulltext_columns
-        + "FROM papers p "
+        + f"FROM {paper_source} "
     )
     if has_fulltext:
         sql += "LEFT JOIN pmc_fulltext f ON f.pmcid = p.pmcid "
-    sql += "ORDER BY p.rowid DESC, p.pmid DESC" if newest_first else "ORDER BY p.pmid"
-    if limit > 0:
-        sql += " LIMIT ?"
+    if newest_first:
+        rowid_name = "p._bridge_rowid" if limit > 0 else "p.rowid"
+        sql += f"ORDER BY {rowid_name} DESC, p.pmid DESC"
+    else:
+        sql += "ORDER BY p.pmid"
 
-    rows = con.execute(sql, (limit,) if limit > 0 else ()).fetchall()
+    rows = con.execute(sql, params).fetchall()
     con.close()
 
     out = Path(out_dir)
