@@ -70,7 +70,7 @@ SenseNova 优先、DeepSeek fallback。API 限流较严时减少 `--workers` 或
 
 ### 同一批 200 篇模型对照
 
-DeepSeek 支持 `LLM_API_KEY`、`LLM_API_KEY_2`、`LLM_API_KEY_3` 三把 NVIDIA key；任一请求报错后按顺序轮换。两次运行使用同一数据库排序和 `--limit 200`，但写入不同目录；NLI 均保持 SenseNova 优先、DeepSeek fallback。
+DeepSeek 只使用 `LLM_API_KEY` 配置的单把 NVIDIA key。两次运行使用同一数据库排序和 `--limit 200`，但写入不同目录；NLI 均保持 SenseNova 优先、DeepSeek fallback。
 
 ```bash
 cd /home/featurize/work/zhaozhengyi/paper-kg-extraction
@@ -82,7 +82,7 @@ EXTRACTION_PROVIDER=sensenova python scripts/02_run_extraction.py \
 
 EXTRACTION_PROVIDER=deepseek python scripts/02_run_extraction.py \
   --from db --db /home/featurize/work/zhaozhengyi/med-papers/pubmed_full.db \
-  --limit 200 --workers 6 \
+  --limit 200 --workers 3 \
   --out out/runs/ab_200_deepseek/paper_triples.jsonl
 ```
 

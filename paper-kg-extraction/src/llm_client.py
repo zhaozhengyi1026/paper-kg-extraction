@@ -69,12 +69,9 @@ def _rate_limit(provider_key: str, min_interval: float = _MIN_INTERVAL):
         now = time.time()
         last_call = _last_calls.get(provider_key, 0.0)
         gap = min_interval - (now - last_call)
-        scheduled = now + max(0.0, gap)
-        _last_calls[provider_key] = scheduled
-    # Do not hold the global lock while waiting: different API keys and
-    # providers have independent quotas and should be able to run concurrently.
-    if gap > 0:
-        time.sleep(gap)
+        if gap > 0:
+            time.sleep(gap)
+        _last_calls[provider_key] = time.time()
 
 
 def _retry_after(error) -> float | None:
@@ -100,21 +97,13 @@ class LLMClient:
         self.metrics = {"requests": 0, "successes": 0, "failures": 0,
                         "retries": 0, "rate_limits": 0, "latency_seconds": 0.0}
         self.metrics.update({"prompt_tokens": 0, "completion_tokens": 0,
-                             "total_tokens": 0, "key_rotations": 0})
+                             "total_tokens": 0})
         self._metrics_lock = threading.Lock()
         if mock:
             return
         # 构造参数优先，环境变量兜底
         self.base_url = (base_url or os.environ.get("LLM_BASE_URL", "")).rstrip("/")
-        if api_key is not None:
-            self.api_keys = [api_key] if api_key else []
-        else:
-            self.api_keys = list(dict.fromkeys(filter(None, (
-                os.environ.get("LLM_API_KEY", ""),
-                os.environ.get("LLM_API_KEY_2", ""),
-                os.environ.get("LLM_API_KEY_3", ""),
-            ))))
-        self.api_key = self.api_keys[0] if self.api_keys else ""
+        self.api_key = api_key or os.environ.get("LLM_API_KEY", "")
         self.min_interval = (min_interval if min_interval is not None else
                              float(os.environ.get("LLM_MIN_INTERVAL", str(_MIN_INTERVAL))))
         self.temperature = (temperature if temperature is not None
@@ -126,27 +115,7 @@ class LLMClient:
             from openai import OpenAI
         except ImportError as e:
             raise RuntimeError("需要 openai 包：pip install openai>=1.0") from e
-        self._clients = [OpenAI(base_url=self.base_url, api_key=key)
-                         for key in self.api_keys]
-        self._client_index = 0
-        self._client_lock = threading.Lock()
-        self._client = self._clients[0]
-
-    def _acquire_client(self):
-        """Distribute concurrent requests across configured API keys."""
-        with self._client_lock:
-            index = self._client_index
-            client = self._clients[index]
-            self._client_index = (index + 1) % len(self._clients)
-            self._client = self._clients[self._client_index]
-            return client, index
-
-    def _rotate_api_key(self) -> bool:
-        if len(self._clients) < 2:
-            return False
-        with self._metrics_lock:
-            self.metrics["key_rotations"] += 1
-        return True
+        self._client = OpenAI(base_url=self.base_url, api_key=self.api_key)
 
     def complete_json(self, system: str, user: str, retries: int = 5) -> dict:
         """调 chat.completions，返回 JSON 对象。
@@ -163,10 +132,8 @@ class LLMClient:
         use_response_format = os.environ.get("LLM_RESPONSE_FORMAT", "1") not in ("0", "no", "false")
         last = None
         for attempt in range(retries):
-            client, key_index = self._acquire_client()
-            # Each credential has its own quota. Keep its throttle independent
-            # without placing secret material in the limiter key or logs.
-            _rate_limit(f"{self.base_url}#key-{key_index}", self.min_interval)
+            # Per-provider throttle is shared across concurrent paper workers.
+            _rate_limit(self.base_url, self.min_interval)
             started = time.monotonic()
             with self._metrics_lock:
                 self.metrics["requests"] += 1
@@ -179,7 +146,7 @@ class LLMClient:
                 )
                 if use_response_format:
                     kwargs["response_format"] = {"type": "json_object"}
-                resp = client.chat.completions.create(**kwargs)
+                resp = self._client.chat.completions.create(**kwargs)
                 txt = resp.choices[0].message.content or "{}"
                 result = _loads_lenient(txt)
                 result["_model_used"] = self.model
@@ -193,40 +160,26 @@ class LLMClient:
             except Exception as e:
                 last = e
                 err_str = str(e).lower()
-                is_rate_limit = "429" in err_str or "rate limit" in err_str
                 with self._metrics_lock:
                     self.metrics["failures"] += 1
                     self.metrics["latency_seconds"] += time.monotonic() - started
-                    if is_rate_limit:
+                    if "429" in err_str or "rate limit" in err_str:
                         self.metrics["rate_limits"] += 1
-                rotated = self._rotate_api_key()
-                if rotated:
-                    print(
-                        f"      ⚠ 当前 API key 调用失败，切换到下一把 key "
-                        f"({attempt + 1}/{retries})",
-                        file=sys.stderr,
-                        flush=True,
-                    )
-                if not rotated and any(kw in err_str for kw in
-                                       ("401", "unauthorized", "403", "forbidden",
-                                        "invalid_request_error", "invalid_api_key")):
+                if any(kw in err_str for kw in
+                       ("401", "unauthorized", "403", "forbidden",
+                        "invalid_request_error", "invalid_api_key")):
                     raise RuntimeError(f"LLM 不可重试错误: {e}") from e
 
                 # Connection failures rarely benefit from five long attempts;
                 # switch to the configured fallback after two.
-                if not rotated and attempt >= 1 and any(kw in err_str for kw in
+                if attempt >= 1 and any(kw in err_str for kw in
                                         ("timeout", "timed out", "connection", "dns")):
                     break
 
                 if attempt < retries - 1:
-                    # Authentication/service failures can try the next key
-                    # immediately. A 429 is different: rotating credentials
-                    # does not remove provider/account cooldown, so always
-                    # honor Retry-After or apply a meaningful backoff.
-                    delay = _retry_after(e) if is_rate_limit or not rotated else 0.0
+                    delay = _retry_after(e)
                     if delay is None:
-                        base_delay = 10.0 if is_rate_limit else 2.0
-                        delay = base_delay * (attempt + 1) + _random.uniform(0, 3)
+                        delay = 2.0 * (attempt + 1) + _random.uniform(0, 3)
                     with self._metrics_lock:
                         self.metrics["retries"] += 1
                     print(f"      ⚠ LLM 重试 {attempt+1}/{retries}，{delay:.0f}s 后: "

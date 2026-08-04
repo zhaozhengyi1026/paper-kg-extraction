@@ -7,7 +7,6 @@ import json
 import sqlite3
 import subprocess
 import sys
-import types
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -17,7 +16,7 @@ sys.path.insert(0, str(REPO / "tools"))
 
 from interaction_credibility import cross_source_merge  # noqa: E402
 from bridge_papers_to_json import export_papers  # noqa: E402
-from llm_client import (FallbackLLMClient, LLMClient, create_extraction_client,
+from llm_client import (FallbackLLMClient, create_extraction_client,
                         create_nli_client, load_env_file)  # noqa: E402
 
 
@@ -108,38 +107,6 @@ def test_extraction_falls_back_to_deepseek():
     )
     assert client.complete_json("system", "user") == {"triples": []}
     assert client.usage_counts == {"sensenova": 0, "deepseek": 1}
-
-
-def test_deepseek_rotates_api_keys_after_error(monkeypatch):
-    calls = []
-
-    class _Completions:
-        def __init__(self, key):
-            self.key = key
-
-        def create(self, **kwargs):
-            calls.append(self.key)
-            if self.key == "key-1":
-                raise RuntimeError("temporary provider error")
-            message = types.SimpleNamespace(content='{"triples": []}')
-            choice = types.SimpleNamespace(message=message)
-            return types.SimpleNamespace(choices=[choice], usage=None)
-
-    class _OpenAI:
-        def __init__(self, base_url, api_key):
-            self.chat = types.SimpleNamespace(completions=_Completions(api_key))
-
-    monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(OpenAI=_OpenAI))
-    monkeypatch.setenv("LLM_API_KEY", "key-1")
-    monkeypatch.setenv("LLM_API_KEY_2", "key-2")
-    monkeypatch.setenv("LLM_API_KEY_3", "key-3")
-    monkeypatch.setenv("LLM_MODEL", "deepseek-test")
-    client = LLMClient(base_url="https://example.invalid/v1", min_interval=0)
-    assert client.complete_json("system", "user") == {
-        "triples": [], "_model_used": "deepseek-test"
-    }
-    assert calls == ["key-1", "key-2"]
-    assert client.metrics["key_rotations"] == 1
 
 
 def test_extraction_provider_can_force_deepseek(monkeypatch):
