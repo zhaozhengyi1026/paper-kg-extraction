@@ -53,22 +53,16 @@ _RELATION_CONFIDENCE_BOOST = {
 # ── HDI/COMPLEMENTS 判定 ──
 # 如果 relation=HDI 但 evidence 不含 PK 交互词（仅含临床疗效词），
 # 应重新分类为 COMPLEMENTS_WM_THERAPY
-_HDI_PK_WORDS = [
-    "bioavailability", "pharmacokinetic", "metabolism", "metabolite",
-    "cyp", "cytochrome", "auc", "absorption", "clearance", "half-life",
-    "excretion", "transporter", "p-gp", "p-glycoprotein",
-    "plasma concentration", "cmax", "tmax",
+_HDI_PK_PATTERNS = [
+    r"\bbioavailability\b", r"\bpharmacokinetic", r"\bdrug\s+metaboli[sz]",
+    r"\bmetaboli[sz](?:e|ed|es|ing)\s+(?:of\s+)?(?:the\s+)?(?:co[- ]?administered\s+)?drug\b",
+    r"\b(cyp\w*|cytochrome\s+p450)\b", r"\bauc\b", r"\bcmax\b", r"\btmax\b",
+    r"\b(clearance|half[- ]life|absorption)\s+of\b",
+    r"\b(plasma|serum|blood|intracellular|hepatocyte)\s+concentration\b",
+    r"\bconcentration\s+of\s+[A-Za-z0-9-]+",
+    r"\b(p-gp|p-glycoprotein|drug\s+transporter)\b",
 ]
-
-# ── 否定词模式 ──
-_NEG_EN = _re.compile(
-    r'\b(not?|neither|nor|without|absence\s+of|failed\s+to|inability\s+to|'
-    r'unable\s+to|does\s+not|did\s+not|do\s+not|has\s+not|have\s+not|'
-    r'lack\s+of|lacking|non[-\s]|negative|absent|ruled?\s+out|'
-    r'no\s+(significant|evidence|effect|change|difference|association))\b',
-    _re.IGNORECASE)
-_NEG_CN = _re.compile(r'不|无|未|没有|缺乏|非|否|莫|勿|未见|无明显|'
-                      r'不具有|不具备|没发现|未发现|无统计学意义')
+_HDI_PK_RE = _re.compile("|".join(_HDI_PK_PATTERNS), _re.IGNORECASE)
 
 # ── 肯定关系 ──
 _AFFIRMATIVE_RELATIONS = {
@@ -78,6 +72,26 @@ _AFFIRMATIVE_RELATIONS = {
     "TREATED_BY_PRINCIPLE", "REALIZED_BY", "CORRESPONDS_TO",
     "HERB_CONTAINS_INGREDIENT", "CONTAINS", "HAS_FUNCTION",
     "GENE_ASSOCIATED_WITH_DISEASE", "MOLECULARLY_TARGETS",
+    "FORMULA_ACTS_VIA", "COMPLEMENTS_WM_THERAPY", "INTEGRATIVE_TREATS",
+    "HAS_PHENOTYPE", "DDI", "HDI", "HHI", "INTERACTS_WITH",
+}
+
+_RELATION_POLARITY_CUES = {
+    "TREATS": r"treat|therapeutic|efficacy|effective|effect|improv|ameliorat|alleviat|benefit|prevent|protect|difference|response",
+    "WM_TREATS": r"treat|therapeutic|efficacy|effective|effect|improv|ameliorat|alleviat|benefit|prevent|protect|difference|response",
+    "INTEGRATIVE_TREATS": r"treat|therapeutic|efficacy|effective|effect|improv|ameliorat|alleviat|benefit|difference|response",
+    "COMPLEMENTS_WM_THERAPY": r"enhanc|additive|synerg|benefit|improv|effective|efficacy|protect",
+    "MOLECULARLY_TARGETS": r"target|bind|interact|inhibit|suppress|regulat|activat|phosphorylat|expression",
+    "FORMULA_ACTS_VIA": r"mechanism|via|pathway|target|inhibit|suppress|regulat|activat",
+    "GENE_ASSOCIATED_WITH_DISEASE": r"associat|correlat|related|pathogenesis|risk|differentially\s+expressed",
+    "HAS_PHENOTYPE": r"phenotype|feature|characteri[sz]|manifest|present|show|exhibit|level|expression",
+    "HERB_CONTAINS_INGREDIENT": r"contain|component|constituent|ingredient|isolated|purified|derived",
+    "CONTAINS": r"contain|component|constituent|ingredient",
+    "HAS_FUNCTION": r"function|activity|effect|role",
+    "DDI": r"interact|adverse|toxicity|pharmacokinetic|bioavailability|concentration|clearance",
+    "HDI": r"interact|adverse|toxicity|pharmacokinetic|bioavailability|concentration|clearance",
+    "HHI": r"interact|synerg|antagoni[sz]|compatib|combined\s+effect",
+    "INTERACTS_WITH": r"interact|synerg|antagoni[sz]|compatib|combined\s+effect",
 }
 
 # ═══════════════════════════════════════════════════════════════
@@ -111,7 +125,60 @@ def _has_pk_evidence(evidence: str) -> bool:
     if not evidence:
         return False
     ev_lower = evidence.lower()
-    return any(w in ev_lower for w in _HDI_PK_WORDS)
+    return bool(_HDI_PK_RE.search(ev_lower))
+
+
+_OUTCOME_RE = _re.compile(
+    r"\b(improv\w*|reduc\w*|decreas\w*|ameliorat\w*|alleviat\w*|effective|"
+    r"efficacy|therapeutic\s+effect|benefit\w*|protect\w*|prevent\w*|delay\w*|"
+    r"treat(?:s|ed|ing)?|lower\w*|increas\w*)\b|治疗|改善|降低|缓解|有效|疗效",
+    _re.IGNORECASE,
+)
+_PURPOSE_RE = _re.compile(
+    r"^\s*(to\s+(study|investigate|evaluate|observe|assess|determine|explore|compare)|"
+    r"we\s+(investigated|evaluated|examined|aimed\s+to)|objective\s*:|aim\s*:)",
+    _re.IGNORECASE,
+)
+_HYPOTHESIS_RE = _re.compile(
+    r"\b(we\s+(assumed|hypothesized|speculated)|it\s+was\s+hypothesized|"
+    r"may\s+potentially\s+(treat|improve)|promising\s+therapeutic)\b",
+    _re.IGNORECASE,
+)
+
+
+def _weak_relation_reason(relation: str, evidence: str) -> str:
+    """Return a reason when the quote lacks a complete proposition for relation."""
+    if not evidence or len(evidence.strip()) < 12:
+        return "evidence fragment is too short"
+    has_outcome = bool(_OUTCOME_RE.search(evidence))
+    if relation in {"TREATS", "WM_TREATS", "INTEGRATIVE_TREATS"}:
+        if _PURPOSE_RE.search(evidence) or _HYPOTHESIS_RE.search(evidence):
+            return "study purpose or hypothesis does not establish treatment efficacy"
+    if relation == "COMPLEMENTS_WM_THERAPY":
+        if _re.search(r"\btreated\s+with\b.{0,100}\bor\b", evidence, _re.IGNORECASE):
+            return "parallel treatments joined by 'or' do not establish combination therapy"
+        combined = _re.search(
+            r"\b(combin\w*|co[- ]?admin\w*|adjunct\w*|plus|together\s+with)\b",
+            evidence, _re.IGNORECASE,
+        )
+        if not combined or not has_outcome:
+            return "combination therapy requires both co-treatment and an outcome statement"
+    return ""
+
+
+def _mechanism_evidence_grade(evidence: str) -> str:
+    """Classify target evidence without changing relation or schema."""
+    low = evidence.lower()
+    if _re.search(r"network pharmacology|molecular docking|predicted|prediction|screened|"
+                  r"potential targets?|target network|enrichment analysis", low):
+        return "predicted"
+    if _re.search(r"\b(direct(?:ly)?\s+(bind|target|interact)|bind(?:s|ing)?\s+to|"
+                  r"binding affinity|pull[- ]down|surface plasmon resonance)\b", low):
+        return "direct"
+    if _re.search(r"\b(inhibit|suppress|down[- ]?regulat|up[- ]?regulat|activat|"
+                  r"knockdown|silenc|phosphorylat|expression)\w*\b", low):
+        return "regulatory"
+    return "indirect"
 
 
 _jieba = None
@@ -147,15 +214,19 @@ _DISEASE_STAGE_PREFIX = _re.compile(
 
 
 def _extract_abbreviations(paper: dict) -> dict[str, str]:
-    text = (paper.get("title") or "") + ". " + (paper.get("abstract") or "")
+    text_parts = [(paper.get("title") or ""), (paper.get("abstract") or "")]
+    text_parts.extend(section.get("text", "") for section in paper.get("sections", []))
+    text = ". ".join(part for part in text_parts if part)
     abbrs: dict[str, str] = {}
     _stop = {"the", "a", "an", "of", "in", "on", "at", "with", "for", "by",
              "to", "and", "or", "was", "were", "is", "are", "effect", "effects",
              "study", "treatment", "expression", "patients", "disease", "gene",
              "protein", "level", "levels", "group", "groups", "using"}
 
-    for m in _re.finditer(r"\(([A-Z]{2,8})\)", text):
-        abbr = m.group(1).upper()
+    for m in _re.finditer(r"\(([A-Z][A-Za-z0-9-]{1,11})\)", text):
+        raw_abbr = m.group(1)
+        abbr = raw_abbr.upper()
+        match_abbr = abbr[:-1] if raw_abbr.endswith("s") and len(abbr) > 2 else abbr
         before = text[:m.start()]
         prev_paren = max(before.rfind(")"), before.rfind(" ("))
         for sep in [". ", "; ", ": "]:
@@ -176,14 +247,18 @@ def _extract_abbreviations(paper: dict) -> dict[str, str]:
             if len(cand) < 2:
                 continue
             first_letters = "".join(w[0] for w in cand if w[0].isalpha()).upper()
-            if not first_letters or abbr[0] != first_letters[0]:
+            if not first_letters or match_abbr[0] != first_letters[0]:
                 continue
-            if _is_abbrev_subseq(abbr, first_letters):
+            if _is_abbrev_subseq(match_abbr, first_letters):
                 if len(cand) < best_n:
                     best = " ".join(cand).lower()
                     best_n = len(cand)
         if best:
             abbrs[abbr] = best
+        elif len(words) >= 2:
+            fallback = " ".join(words[-2:]).strip(" ,.;:[]").lower()
+            if all(w.lower().strip(" ,.;:[]") not in _stop for w in words[-2:]):
+                abbrs[abbr] = fallback
     return abbrs
 
 
@@ -323,71 +398,68 @@ def extract_paper(paper: dict, schema, llm, run_id: str,
 
 def _has_negation(evidence: str, relation: str,
                   head: str, tail: str) -> tuple[bool, str]:
+    """Detect negation scoped to the asserted relation, not nearby tokens alone."""
     if not evidence:
         return False, ""
     if relation not in _AFFIRMATIVE_RELATIONS:
         return False, ""
+    cleaned = _mask_non_negative_constructions(evidence)
+    cue = _RELATION_POLARITY_CUES.get(relation, "effect|association|interaction")
+    tail_pattern = _entity_scope_pattern(tail)
+    cue_pattern = f"(?:{cue})\\w*"
+    target = f"(?:{cue_pattern}|{tail_pattern})" if tail_pattern else cue_pattern
+    patterns = [
+        rf"\b(?:do|does|did|is|are|was|were|has|have|had|can|could|may|might|would)\s+not"
+        rf"\s+(?:\w+[\s-]+){{0,5}}{target}\b",
+        rf"\b(?:failed|fails?|unable)\s+to\s+(?:\w+[\s-]+){{0,4}}{target}\b",
+        rf"\b(?:no|neither)\s+(?:significant(?:ly)?\s+)?(?:\w+[\s-]+){{0,3}}{target}\b",
+        rf"\b(?:lack(?:ed|s|ing)?(?:\s+of)?|absence\s+of|without(?:\s+any)?)\s+"
+        rf"(?:\w+[\s-]+){{0,3}}{target}\b",
+    ]
+    for pattern in patterns:
+        match = _re.search(pattern, cleaned, _re.IGNORECASE)
+        if match:
+            return True, f"关系谓词被否定: {match.group(0)[:100]}"
 
-    # "not only... but also" 是强调结构，不是否定
-    # 临时替换掉，避免 "not" 被误判为否定词
-    evidence_clean = _re.sub(
-        r'\bnot\s+only\b.*?\bbut\s+also\b',
-        '__EMPHATIC__', evidence, flags=_re.IGNORECASE
+    cn_target = _re.escape(tail.strip()) if tail and not tail.isascii() else ""
+    cn_cues = r"治疗|改善|降低|缓解|有效|相关|关联|表达|调控|激活|抑制|含有|成分|相互作用|协同"
+    cn_target = f"(?:{cn_cues}|{cn_target})" if cn_target else f"(?:{cn_cues})"
+    cn_match = _re.search(
+        rf"(?:不|未|无|没有|未见|缺乏|不能|无法)[^，。；;,.]{{0,12}}{cn_target}", cleaned
     )
-
-    has_en = bool(_NEG_EN.search(evidence_clean))
-    has_cn = bool(_NEG_CN.search(evidence_clean))
-    if not has_en and not has_cn:
-        return False, ""
-
-    ev_lower = evidence.lower()
-    ev_lower_clean = evidence_clean.lower()
-    nearby = False
-    for entity in (head, tail):
-        if not entity:
-            continue
-        entity_lower = entity.lower()
-        idx = ev_lower.find(entity_lower)
-        if idx < 0:
-            ent_compact = _re.sub(r'\s+', '', entity_lower)
-            ev_compact = _re.sub(r'\s+', '', ev_lower)
-            idx_c = ev_compact.find(ent_compact)
-            if idx_c >= 0:
-                idx = _compact_to_original(ev_lower, ev_compact, idx_c)
-        if idx >= 0:
-            start = max(0, idx - 40)
-            end = min(len(ev_lower_clean), idx + len(entity) + 40)
-            window = ev_lower_clean[start:end]
-            if _NEG_EN.search(window):
-                nearby = True
-                break
-    if not nearby:
-        for neg_match in _NEG_CN.finditer(evidence):
-            neg_pos = neg_match.start()
-            for entity in (head, tail):
-                if not entity:
-                    continue
-                ent_pos = evidence.lower().find(entity.lower())
-                if ent_pos >= 0 and abs(neg_pos - ent_pos) <= 40:
-                    nearby = True
-                    break
-            if nearby:
-                break
-    if nearby:
-        detail = f"否定词在实体附近: {evidence[:100]}"
-        return True, detail
+    if cn_match:
+        return True, f"关系谓词被否定: {cn_match.group(0)[:100]}"
     return False, ""
 
 
-def _compact_to_original(original: str, compact: str, compact_idx: int) -> int:
-    orig_idx = 0
-    comp_idx = 0
-    for orig_idx in range(len(original)):
-        if comp_idx == compact_idx:
-            return orig_idx
-        if not original[orig_idx].isspace():
-            comp_idx += 1
-    return compact_idx
+def _mask_non_negative_constructions(text: str) -> str:
+    """Mask pseudo-negation and biochemical NO while preserving positions."""
+    masked = text
+    for pattern in (
+        r"\bnot\s+only\b", r"\bbut\s+also\b", r"\bno\s+less\s+than\b",
+        r"\bnot\s+limited\s+to\b",
+    ):
+        masked = _re.sub(pattern, lambda m: " " * len(m.group(0)), masked,
+                         flags=_re.IGNORECASE)
+    biochemical_context = _re.search(
+        r"\b(nitric\s+oxide|iNOS|eNOS|nNOS|NO\s+(?:production|generation|release|level|synthesis)|"
+        r"(?:produce|release|generate|synthesize)\w*\s+NO)\b",
+        masked,
+    )
+    if biochemical_context:
+        masked = _re.sub(r"\bNO\b", "__NITRIC_OXIDE__", masked)
+    return masked
+
+
+def _entity_scope_pattern(entity: str) -> str:
+    if not entity:
+        return ""
+    words = _re.findall(r"[A-Za-z0-9α-ωΑ-Ωβκ]+", entity)
+    if not words:
+        return ""
+    full = r"[\s-]+".join(_re.escape(word) for word in words)
+    last = _re.escape(words[-1])
+    return full if full == last else f"(?:{full}|{last})"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -594,6 +666,14 @@ def _make_edge(tr, unit, schema, run_id, method, tier, conf,
         _reject("ev_entity_mismatch", reason + " not in evidence")
         return None
 
+    # ── 3.1) 命题完整性：目的/假设/平行组不能充当疗效证据 ──
+    weak_reason = _weak_relation_reason(rel, evidence_text)
+    if weak_reason:
+        _bump(stats, "weak_relation_evidence")
+        print("      REJ weak evidence: " + weak_reason, file=sys.stderr, flush=True)
+        _reject("weak_relation_evidence", weak_reason)
+        return None
+
     # ── 3.5) NLI 语义校验 ──
     if nli_llm is not None and nli_cache is not None and needs_nli(rel):
         nli_label, nli_hyp = _run_nli_check(
@@ -619,10 +699,39 @@ def _make_edge(tr, unit, schema, run_id, method, tier, conf,
                                    "tail": tail, "tail_type": tt})
         if ok2:
             rel = new_rel
+            weak_reason = _weak_relation_reason(rel, evidence_text)
+            if weak_reason:
+                _bump(stats, "weak_relation_evidence")
+                print("      REJ weak evidence: " + weak_reason,
+                      file=sys.stderr, flush=True)
+                _reject("weak_relation_evidence", weak_reason)
+                return None
             _bump(stats, "hdi_reclassified")
             detail = "HDI→COMPLEMENTS: no PK evidence"
             print("      ⚠ reclass: " + detail[:100], file=sys.stderr, flush=True)
             _warn("hdi_reclassified", detail)
+
+    # ── 3.7) 机制证据分级（不改变 schema） ──
+    if rel == "MOLECULARLY_TARGETS":
+        mechanism_grade = _mechanism_evidence_grade(evidence_text)
+        if mechanism_grade == "predicted":
+            conf = round(conf * 0.75, 3)
+            _bump(stats, "mechanism:predicted")
+            _warn("predicted_mechanism",
+                  f"MOLECULARLY_TARGETS is prediction-level evidence (confidence→{conf})")
+        elif mechanism_grade == "indirect":
+            conf = round(conf * 0.85, 3)
+            _bump(stats, "mechanism:indirect")
+            _warn("indirect_mechanism",
+                  f"MOLECULARLY_TARGETS lacks direct binding/regulation evidence (confidence→{conf})")
+
+    if rel == "HAS_PHENOTYPE" and ht == "Exposure" and _re.search(
+        r"\b(caus(?:e|ed|es|ing)|induc(?:e|ed|es|ing)|trigger(?:ed|s|ing)?)\b",
+        evidence_text, _re.IGNORECASE,
+    ):
+        _bump(stats, "exposure_causal_semantics")
+        _warn("exposure_causal_semantics",
+              "Schema permits Exposure HAS_PHENOTYPE, but evidence uses explicit causal wording")
 
     # ── 4) 否定检测 ──
     neg, neg_detail = _has_negation(evidence_text, rel, head, tail)

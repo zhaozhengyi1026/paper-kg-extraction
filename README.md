@@ -192,6 +192,15 @@ paper-kg-extraction/
 - **否定误杀修复**: "not only...but also" 不触发 negation_warning
 - **耗时统计**: extraction_report 含 `"elapsed": "3h25m12s"`
 
+## v5.2 质量控制改进
+
+- NLI 按关系类型判断证据：关联不再误判为因果，配方作用和分子靶点使用独立规则。
+- 在进入 NLI 前拒绝研究目的、假设、并列候选和不完整补语等弱证据。
+- 预测或间接的分子靶点保留但降低置信度，并写入明确 warning，便于后续筛选。
+- 否定检测改为关系感知的局部作用域规则；生化语境中的 `NO`、`not only...but also` 等不再误报。
+- 缩写从论文全文解析，同时保留证据原文中的 Unicode 空格，确保 provenance span 可回溯。
+- 本次仅收紧抽取与校验逻辑，未修改任何 schema 或输出字段。
+
 ## License
 
 MIT

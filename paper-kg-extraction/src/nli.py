@@ -27,7 +27,7 @@ _RELATION_TEMPLATES: Dict[str, str] = {
     "MOLECULARLY_TARGETS": "“{head}”靶向或调控“{tail}”",
     "COMPLEMENTS_WM_THERAPY": "“{head}”与“{tail}”联用可增强疗效",
     "HAS_PHENOTYPE": "“{head}”表现为“{tail}”这一表型特征",
-    "GENE_ASSOCIATED_WITH_DISEASE": "“{head}”基因与“{tail}”疾病之间存在因果关联",
+    "GENE_ASSOCIATED_WITH_DISEASE": "证据报告“{head}”与“{tail}”存在关联或与其病程有关；不要求因果关系",
     "HAS_FUNCTION": "“{head}”具有“{tail}”这一功能",
     "FORMULA_ACTS_VIA": "“{head}”通过“{tail}”发挥作用",
 }
@@ -116,7 +116,43 @@ def skip_nli(evidence: str, relation: str) -> bool:
     """
     if not evidence:
         return False
-    return bool(_get_clear_re().search(evidence))
+    low = evidence.lower()
+    contains = _re_search(
+        r"\b(component|constituent|isolated|purified|extracted|derived)\b", low
+    )
+    regulates = _re_search(
+        r"\b(bind(?:s|ing)?|directly\s+target|inhibit(?:s|ed|ing)?|suppress(?:es|ed|ing)?|"
+        r"down[- ]?regulat\w*|up[- ]?regulat\w*|activat(?:e|es|ed|ing)|reduced?\s+the\s+expression|"
+        r"increased?\s+the\s+expression)\b", low
+    )
+    association = _re_search(
+        r"\b(associated\s+with|related\s+to|related\s+gene|plays?\s+.*role\s+in|"
+        r"involved\s+in|pathogenesis|differentially\s+expressed|upregulated|downregulated)\b",
+        low,
+    )
+    phenotype = _re_search(
+        r"\b(characteri[sz]ed\s+by|feature\s+of|associated\s+with|showed|exhibited|"
+        r"increased|decreased|elevated|reduced)\b", low
+    )
+    if relation == "HERB_CONTAINS_INGREDIENT":
+        return bool(contains)
+    if relation in {"MOLECULARLY_TARGETS", "FORMULA_ACTS_VIA"}:
+        return bool(regulates)
+    if relation == "GENE_ASSOCIATED_WITH_DISEASE":
+        return bool(association)
+    if relation == "HAS_PHENOTYPE":
+        return bool(phenotype)
+    if relation == "COMPLEMENTS_WM_THERAPY":
+        combined = _re_search(r"\b(combin|co[- ]?admin|adjunct|plus)\w*\b", low)
+        benefit = _re_search(
+            r"\b(improv|reduc|decreas|ameliorat|effective|benefit|protect|enhanc)\w*\b", low
+        )
+        return bool(combined and benefit)
+    return False
+
+
+def _re_search(pattern: str, text: str):
+    return __import__("re").search(pattern, text, __import__("re").IGNORECASE)
 
 
 def build_hypothesis(head: str, relation: str, tail: str) -> str | None:
@@ -139,9 +175,16 @@ def _nli_system_prompt() -> str:
         "2. contradiction: 前提直接否定或与假设有明显矛盾。\n"
         "3. neutral: 前提不包含足够信息来确认或否定假设。这包括：\n"
         "   - 前提只是描述研究目的/方法（如 \"To study...\", \"we investigated...\"）\n"
-        "   - 前提使用弱推测语言（如 \"may be...\", \"might be associated with...\"）\n"
+        "   - 对治疗、直接靶向等强断言，前提只有弱推测语言（如 \"may treat...\"）\n"
         "   - 前提与假设相关但不足以证明假设\n"
         "   - 前提中括号内是名称注释/同义词说明（不是成分定义）\n\n"
+        "关系解释：\n"
+        "- GENE_ASSOCIATED_WITH_DISEASE 只要求关联，不要求因果。may be associated、"
+        "related gene、疾病组织中差异表达、参与病理过程均可支持关联假设。\n"
+        "- FORMULA_ACTS_VIA 包括激活或抑制靶点/通路；suppressing/inhibiting 某通路是支持，"
+        "不是 contradiction。\n"
+        "- MOLECULARLY_TARGETS 包括明确的结合或实验调控；单纯研究目的、共同出现或计算预测"
+        "不足以单独构成 entailment。\n\n"
         "只输出 JSON 对象，格式：{\"results\": [{\"label\": \"entailment|neutral|contradiction\"}]}"
     )
 

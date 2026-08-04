@@ -66,11 +66,10 @@ def verify_evidence(unit_text: str, evidence_sentence: str,
     if width > MAX_EVIDENCE_CHARS:
         return {"ok": False, "reason": "evidence_too_wide"}
 
-    # ── 证据清理 ──
+    # 保留 unit 原始子串。显示时替换 NBSP 但继续使用原始偏移会让
+    # 后续 char-span 闸门把有效证据误判为不一致。
     evidence_text = unit_text[char_start:char_end]
-    # 1) NBSP → 普通空格
-    evidence_text = evidence_text.replace("\xa0", " ").replace(" ", " ")
-    # 2) 扩展截断括号
+    # 扩展截断括号
     evidence_text, char_end = _extend_incomplete_bracket(
         unit_text, char_start, char_end, evidence_text
     )
@@ -101,7 +100,7 @@ def _extend_incomplete_bracket(
             break
 
         if open_parens == 0 and open_brackets == 0:
-            extended = unit_text[cs : i + 1].replace("\xa0", " ").replace(" ", " ")
+            extended = unit_text[cs : i + 1]
             if len(extended) <= 400:
                 return extended, i + 1
             break
