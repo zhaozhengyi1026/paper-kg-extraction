@@ -11,15 +11,29 @@ def export_papers(db_path: str, out_dir: str, limit: int = 0,
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
 
+    paper_columns = {
+        row["name"] for row in con.execute("PRAGMA table_info(papers)")
+    }
+
+    def paper_column(name: str, default_sql: str = "''") -> str:
+        """Select an optional papers column or a compatible default."""
+        return f"p.{name}" if name in paper_columns else f"{default_sql} AS {name}"
+
     has_fulltext = con.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pmc_fulltext'"
     ).fetchone() is not None
     fulltext_columns = ("f.sections AS fulltext_sections, f.license AS fulltext_license "
                         if has_fulltext else
                         "NULL AS fulltext_sections, NULL AS fulltext_license ")
-    sql = ("SELECT p.pmid, p.pmcid, p.doi, p.title, p.abstract, p.license, "
-           "p.evidence_level, p.journal, p.pub_date, p.authority_tier, "
-           "p.authority_score, " + fulltext_columns + "FROM papers p ")
+    sql = (
+        "SELECT p.pmid, p.pmcid, p.doi, p.title, p.abstract, "
+        f"{paper_column('license')}, {paper_column('evidence_level')}, "
+        f"{paper_column('journal')}, {paper_column('pub_date')}, "
+        f"{paper_column('authority_tier')}, "
+        f"{paper_column('authority_score', '0')}, "
+        + fulltext_columns
+        + "FROM papers p "
+    )
     if has_fulltext:
         sql += "LEFT JOIN pmc_fulltext f ON f.pmcid = p.pmcid "
     sql += "ORDER BY p.rowid DESC, p.pmid DESC" if newest_first else "ORDER BY p.pmid"

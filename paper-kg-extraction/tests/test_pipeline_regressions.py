@@ -260,6 +260,40 @@ def test_bridge_cleans_stale_files_and_prefers_fulltext(tmp_path):
     assert paper["license"] == "cc-by"
 
 
+def test_bridge_supports_pubmed_full_sync_schema(tmp_path):
+    db = tmp_path / "pubmed_full.db"
+    con = sqlite3.connect(db)
+    con.executescript("""
+      CREATE TABLE papers (
+        pmid TEXT, pmcid TEXT, doi TEXT, title TEXT, authors TEXT,
+        journal TEXT, pub_date TEXT, abstract TEXT, mesh_terms TEXT,
+        keywords TEXT, pub_types TEXT, source TEXT,
+        created_at TEXT, updated_at TEXT
+      );
+      CREATE TABLE pmc_fulltext (
+        pmcid TEXT, pmid TEXT, doi TEXT, title TEXT, authors TEXT,
+        journal TEXT, pub_date TEXT, abstract TEXT, full_text TEXT,
+        sections TEXT, "references" TEXT, license TEXT, source TEXT,
+        created_at TEXT
+      );
+      INSERT INTO papers VALUES
+        ('1','PMC1','','title','','journal','2026','abstract','','','','pubmed','','');
+      INSERT INTO pmc_fulltext VALUES
+        ('PMC1','1','','title','','journal','2026','abstract','full',
+         '[{"title":"Results","text":"full text"}]','','cc-by','pmc','');
+    """)
+    con.commit()
+    con.close()
+
+    out = tmp_path / "papers"
+    assert export_papers(str(db), str(out), limit=200) == 1
+    paper = json.loads((out / "1.json").read_text(encoding="utf-8"))
+    assert paper["license"] == "cc-by"
+    assert paper["evidence_level"] == ""
+    assert paper["authority_score"] == 0
+    assert paper["sections"] == [{"title": "Results", "text": "full text"}]
+
+
 def test_mock_keeps_same_edge_from_two_papers(tmp_path):
     sample = json.loads((ROOT / "examples" / "sample_paper.json").read_text(encoding="utf-8"))
     input_dir = tmp_path / "papers"
