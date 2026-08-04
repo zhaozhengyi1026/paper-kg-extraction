@@ -22,9 +22,6 @@ def export_papers(db_path: str, out_dir: str, limit: int = 0,
     has_fulltext = con.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pmc_fulltext'"
     ).fetchone() is not None
-    fulltext_columns = ("f.sections AS fulltext_sections, f.license AS fulltext_license "
-                        if has_fulltext else
-                        "NULL AS fulltext_sections, NULL AS fulltext_license ")
     order_by = "rowid DESC, pmid DESC" if newest_first else "pmid"
     params: tuple[int, ...] = ()
     if limit > 0:
@@ -44,12 +41,9 @@ def export_papers(db_path: str, out_dir: str, limit: int = 0,
         f"{paper_column('license')}, {paper_column('evidence_level')}, "
         f"{paper_column('journal')}, {paper_column('pub_date')}, "
         f"{paper_column('authority_tier')}, "
-        f"{paper_column('authority_score', '0')}, "
-        + fulltext_columns
+        f"{paper_column('authority_score', '0')} "
         + f"FROM {paper_source} "
     )
-    if has_fulltext:
-        sql += "LEFT JOIN pmc_fulltext f ON f.pmcid = p.pmcid "
     if newest_first:
         rowid_name = "p._bridge_rowid" if limit > 0 else "p.rowid"
         sql += f"ORDER BY {rowid_name} DESC, p.pmid DESC"
@@ -57,6 +51,17 @@ def export_papers(db_path: str, out_dir: str, limit: int = 0,
         sql += "ORDER BY p.pmid"
 
     rows = con.execute(sql, params).fetchall()
+    fulltext_by_pmcid: dict[str, sqlite3.Row] = {}
+    if has_fulltext:
+        pmcids = list(dict.fromkeys(r["pmcid"] for r in rows if r["pmcid"]))
+        if pmcids:
+            placeholders = ",".join("?" for _ in pmcids)
+            fulltext_rows = con.execute(
+                "SELECT pmcid, sections, license FROM pmc_fulltext "
+                f"WHERE pmcid IN ({placeholders})",
+                pmcids,
+            ).fetchall()
+            fulltext_by_pmcid = {r["pmcid"]: r for r in fulltext_rows}
     con.close()
 
     out = Path(out_dir)
@@ -67,9 +72,10 @@ def export_papers(db_path: str, out_dir: str, limit: int = 0,
 
     papers = []
     for r in rows:
+        fulltext = fulltext_by_pmcid.get(r["pmcid"])
         # 把 abstract 包装成单个 section（模拟全文结构）
         try:
-            sections = json.loads(r["fulltext_sections"]) if r["fulltext_sections"] else []
+            sections = json.loads(fulltext["sections"]) if fulltext and fulltext["sections"] else []
         except (json.JSONDecodeError, TypeError):
             sections = []
         if not sections and r["abstract"]:
@@ -82,7 +88,8 @@ def export_papers(db_path: str, out_dir: str, limit: int = 0,
             "title": r["title"] or "",
             "abstract": r["abstract"] or "",
             "sections": sections,
-            "license": (r["fulltext_license"] or r["license"] or "pubmed").lower(),
+            "license": ((fulltext["license"] if fulltext else "")
+                        or r["license"] or "pubmed").lower(),
             "evidence_level": r["evidence_level"] or "",
             "journal": r["journal"] or "",
             "authority_tier": r["authority_tier"] or "",
