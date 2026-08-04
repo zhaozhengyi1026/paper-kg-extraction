@@ -193,10 +193,11 @@ class LLMClient:
             except Exception as e:
                 last = e
                 err_str = str(e).lower()
+                is_rate_limit = "429" in err_str or "rate limit" in err_str
                 with self._metrics_lock:
                     self.metrics["failures"] += 1
                     self.metrics["latency_seconds"] += time.monotonic() - started
-                    if "429" in err_str or "rate limit" in err_str:
+                    if is_rate_limit:
                         self.metrics["rate_limits"] += 1
                 rotated = self._rotate_api_key()
                 if rotated:
@@ -218,9 +219,14 @@ class LLMClient:
                     break
 
                 if attempt < retries - 1:
-                    delay = 0.0 if rotated else _retry_after(e)
+                    # Authentication/service failures can try the next key
+                    # immediately. A 429 is different: rotating credentials
+                    # does not remove provider/account cooldown, so always
+                    # honor Retry-After or apply a meaningful backoff.
+                    delay = _retry_after(e) if is_rate_limit or not rotated else 0.0
                     if delay is None:
-                        delay = 2.0 * (attempt + 1) + _random.uniform(0, 3)
+                        base_delay = 10.0 if is_rate_limit else 2.0
+                        delay = base_delay * (attempt + 1) + _random.uniform(0, 3)
                     with self._metrics_lock:
                         self.metrics["retries"] += 1
                     print(f"      ⚠ LLM 重试 {attempt+1}/{retries}，{delay:.0f}s 后: "
