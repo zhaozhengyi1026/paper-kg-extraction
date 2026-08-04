@@ -69,9 +69,12 @@ def _rate_limit(provider_key: str, min_interval: float = _MIN_INTERVAL):
         now = time.time()
         last_call = _last_calls.get(provider_key, 0.0)
         gap = min_interval - (now - last_call)
-        if gap > 0:
-            time.sleep(gap)
-        _last_calls[provider_key] = time.time()
+        scheduled = now + max(0.0, gap)
+        _last_calls[provider_key] = scheduled
+    # Do not hold the global lock while waiting: different API keys and
+    # providers have independent quotas and should be able to run concurrently.
+    if gap > 0:
+        time.sleep(gap)
 
 
 def _retry_after(error) -> float | None:
@@ -129,16 +132,18 @@ class LLMClient:
         self._client_lock = threading.Lock()
         self._client = self._clients[0]
 
-    def _current_client(self):
+    def _acquire_client(self):
+        """Distribute concurrent requests across configured API keys."""
         with self._client_lock:
-            return self._clients[self._client_index]
+            index = self._client_index
+            client = self._clients[index]
+            self._client_index = (index + 1) % len(self._clients)
+            self._client = self._clients[self._client_index]
+            return client, index
 
     def _rotate_api_key(self) -> bool:
         if len(self._clients) < 2:
             return False
-        with self._client_lock:
-            self._client_index = (self._client_index + 1) % len(self._clients)
-            self._client = self._clients[self._client_index]
         with self._metrics_lock:
             self.metrics["key_rotations"] += 1
         return True
@@ -158,8 +163,10 @@ class LLMClient:
         use_response_format = os.environ.get("LLM_RESPONSE_FORMAT", "1") not in ("0", "no", "false")
         last = None
         for attempt in range(retries):
-            # Per-provider throttle is shared across concurrent paper workers.
-            _rate_limit(self.base_url, self.min_interval)
+            client, key_index = self._acquire_client()
+            # Each credential has its own quota. Keep its throttle independent
+            # without placing secret material in the limiter key or logs.
+            _rate_limit(f"{self.base_url}#key-{key_index}", self.min_interval)
             started = time.monotonic()
             with self._metrics_lock:
                 self.metrics["requests"] += 1
@@ -172,7 +179,7 @@ class LLMClient:
                 )
                 if use_response_format:
                     kwargs["response_format"] = {"type": "json_object"}
-                resp = self._current_client().chat.completions.create(**kwargs)
+                resp = client.chat.completions.create(**kwargs)
                 txt = resp.choices[0].message.content or "{}"
                 result = _loads_lenient(txt)
                 result["_model_used"] = self.model
