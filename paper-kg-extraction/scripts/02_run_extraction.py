@@ -241,8 +241,8 @@ def main():
     ap.add_argument("--batch-id", default="batch:local:00000000:manual")
     ap.add_argument("--mock", action="store_true", help="离线确定性抽取（无需 API key，仅冒烟）")
     ap.add_argument("--no-resume", action="store_true", help="不续跑：即使输出文件已存在也重新抽取全部")
-    ap.add_argument("--workers", type=int, default=int(os.environ.get("EXTRACTION_WORKERS", "2")),
-                    help="并发处理论文数；建议 2-3，默认 1")
+    ap.add_argument("--workers", type=int, default=int(os.environ.get("EXTRACTION_WORKERS", "6")),
+                    help="并发处理论文数；SenseNova 建议 6，遇到 429 时调低")
     args = ap.parse_args()
     if args.shard_count < 1 or not 0 <= args.shard_index < args.shard_count:
         ap.error("要求 shard-count >= 1 且 0 <= shard-index < shard-count")

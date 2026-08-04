@@ -68,6 +68,26 @@ nohup python scripts/02_run_extraction.py \
 推荐按 PMID 分片。下面示例启动 8 个互不重叠的后台任务；每个任务内部默认
 SenseNova 优先、DeepSeek fallback。API 限流较严时减少 `--workers` 或分片数。
 
+### 同一批 200 篇模型对照
+
+DeepSeek 支持 `LLM_API_KEY`、`LLM_API_KEY_2`、`LLM_API_KEY_3` 三把 NVIDIA key；任一请求报错后按顺序轮换。两次运行使用同一数据库排序和 `--limit 200`，但写入不同目录；NLI 均保持 SenseNova 优先、DeepSeek fallback。
+
+```bash
+cd /home/featurize/work/zhaozhengyi/paper-kg-extraction
+
+EXTRACTION_PROVIDER=sensenova python scripts/02_run_extraction.py \
+  --from db --db /home/featurize/work/zhaozhengyi/med-papers/pubmed_full.db \
+  --limit 200 --workers 6 \
+  --out out/runs/ab_200_sensenova/paper_triples.jsonl
+
+EXTRACTION_PROVIDER=deepseek python scripts/02_run_extraction.py \
+  --from db --db /home/featurize/work/zhaozhengyi/med-papers/pubmed_full.db \
+  --limit 200 --workers 6 \
+  --out out/runs/ab_200_deepseek/paper_triples.jsonl
+```
+
+SenseNova 的默认请求间隔为 0.2 秒，可用 `SENSENOVA_MIN_INTERVAL` 调整；频繁出现 429 时应降低 `--workers` 或增大间隔。两个命令应分别运行，避免模型间争用 SenseNova NLI 配额。
+
 ```bash
 mkdir -p out/runs/pubmed_all
 for i in $(seq 0 7); do

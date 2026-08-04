@@ -22,4 +22,4 @@ History uses short imperative subjects with an optional area prefix, for example
 
 ## Mandatory Work Log
 
-After every repository, configuration, data, or deployment-related change, append an entry to the current monthly Chinese work log, such as `八月工作记录.md`. Record the date and time, files changed, reason, behavior before and after, validation results, commit hash, push/deployment state, and unfinished work. Never rewrite earlier entries to hide corrections; append a correction instead. Documentation-only changes must also be logged.
+After every repository, configuration, data, documentation, Git, or deployment-related change, append to the workspace's single August log at `D:\Apricot_AI\八月工作记录.md`. Record the date and time, files changed, reason, behavior before and after, validation results, commit hash, push/deployment state, and unfinished work. Do not maintain a second log in this repository. Never rewrite earlier entries to hide corrections; append a correction instead.

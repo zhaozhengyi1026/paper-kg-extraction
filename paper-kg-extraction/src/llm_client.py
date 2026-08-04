@@ -64,11 +64,11 @@ _rate_lock = threading.Lock()
 _last_calls: dict[str, float] = {}
 
 
-def _rate_limit(provider_key: str):
+def _rate_limit(provider_key: str, min_interval: float = _MIN_INTERVAL):
     with _rate_lock:
         now = time.time()
         last_call = _last_calls.get(provider_key, 0.0)
-        gap = _MIN_INTERVAL - (now - last_call)
+        gap = min_interval - (now - last_call)
         if gap > 0:
             time.sleep(gap)
         _last_calls[provider_key] = time.time()
@@ -90,18 +90,30 @@ class LLMClient:
                  base_url: str | None = None,
                  api_key: str | None = None,
                  model: str | None = None,
-                 temperature: float | None = None):
+                 temperature: float | None = None,
+                 min_interval: float | None = None):
         self.mock = mock
         self.model = "mock" if mock else (model or os.environ.get("LLM_MODEL", ""))
         self.metrics = {"requests": 0, "successes": 0, "failures": 0,
                         "retries": 0, "rate_limits": 0, "latency_seconds": 0.0}
-        self.metrics.update({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+        self.metrics.update({"prompt_tokens": 0, "completion_tokens": 0,
+                             "total_tokens": 0, "key_rotations": 0})
         self._metrics_lock = threading.Lock()
         if mock:
             return
         # 构造参数优先，环境变量兜底
         self.base_url = (base_url or os.environ.get("LLM_BASE_URL", "")).rstrip("/")
-        self.api_key = api_key or os.environ.get("LLM_API_KEY", "")
+        if api_key is not None:
+            self.api_keys = [api_key] if api_key else []
+        else:
+            self.api_keys = list(dict.fromkeys(filter(None, (
+                os.environ.get("LLM_API_KEY", ""),
+                os.environ.get("LLM_API_KEY_2", ""),
+                os.environ.get("LLM_API_KEY_3", ""),
+            ))))
+        self.api_key = self.api_keys[0] if self.api_keys else ""
+        self.min_interval = (min_interval if min_interval is not None else
+                             float(os.environ.get("LLM_MIN_INTERVAL", str(_MIN_INTERVAL))))
         self.temperature = (temperature if temperature is not None
                             else float(os.environ.get("LLM_TEMPERATURE", "0") or 0))
         if not (self.base_url and self.api_key and self.model):
@@ -111,7 +123,25 @@ class LLMClient:
             from openai import OpenAI
         except ImportError as e:
             raise RuntimeError("需要 openai 包：pip install openai>=1.0") from e
-        self._client = OpenAI(base_url=self.base_url, api_key=self.api_key)
+        self._clients = [OpenAI(base_url=self.base_url, api_key=key)
+                         for key in self.api_keys]
+        self._client_index = 0
+        self._client_lock = threading.Lock()
+        self._client = self._clients[0]
+
+    def _current_client(self):
+        with self._client_lock:
+            return self._clients[self._client_index]
+
+    def _rotate_api_key(self) -> bool:
+        if len(self._clients) < 2:
+            return False
+        with self._client_lock:
+            self._client_index = (self._client_index + 1) % len(self._clients)
+            self._client = self._clients[self._client_index]
+        with self._metrics_lock:
+            self.metrics["key_rotations"] += 1
+        return True
 
     def complete_json(self, system: str, user: str, retries: int = 5) -> dict:
         """调 chat.completions，返回 JSON 对象。
@@ -129,7 +159,7 @@ class LLMClient:
         last = None
         for attempt in range(retries):
             # Per-provider throttle is shared across concurrent paper workers.
-            _rate_limit(self.base_url)
+            _rate_limit(self.base_url, self.min_interval)
             started = time.monotonic()
             with self._metrics_lock:
                 self.metrics["requests"] += 1
@@ -142,7 +172,7 @@ class LLMClient:
                 )
                 if use_response_format:
                     kwargs["response_format"] = {"type": "json_object"}
-                resp = self._client.chat.completions.create(**kwargs)
+                resp = self._current_client().chat.completions.create(**kwargs)
                 txt = resp.choices[0].message.content or "{}"
                 result = _loads_lenient(txt)
                 result["_model_used"] = self.model
@@ -161,18 +191,27 @@ class LLMClient:
                     self.metrics["latency_seconds"] += time.monotonic() - started
                     if "429" in err_str or "rate limit" in err_str:
                         self.metrics["rate_limits"] += 1
-                if any(kw in err_str for kw in ("401", "unauthorized", "403", "forbidden",
-                                                  "invalid_request_error", "invalid_api_key")):
+                rotated = self._rotate_api_key()
+                if rotated:
+                    print(
+                        f"      ⚠ 当前 API key 调用失败，切换到下一把 key "
+                        f"({attempt + 1}/{retries})",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                if not rotated and any(kw in err_str for kw in
+                                       ("401", "unauthorized", "403", "forbidden",
+                                        "invalid_request_error", "invalid_api_key")):
                     raise RuntimeError(f"LLM 不可重试错误: {e}") from e
 
                 # Connection failures rarely benefit from five long attempts;
                 # switch to the configured fallback after two.
-                if attempt >= 1 and any(kw in err_str for kw in
+                if not rotated and attempt >= 1 and any(kw in err_str for kw in
                                         ("timeout", "timed out", "connection", "dns")):
                     break
 
                 if attempt < retries - 1:
-                    delay = _retry_after(e)
+                    delay = 0.0 if rotated else _retry_after(e)
                     if delay is None:
                         delay = 2.0 * (attempt + 1) + _random.uniform(0, 3)
                     with self._metrics_lock:
@@ -330,6 +369,11 @@ def create_extraction_client(mock: bool = False):
         return LLMClient(mock=True)
 
     fallback = LLMClient()
+    provider = os.environ.get("EXTRACTION_PROVIDER", "sensenova").strip().lower()
+    if provider == "deepseek":
+        return fallback
+    if provider not in ("sensenova", "auto"):
+        raise RuntimeError("EXTRACTION_PROVIDER 只能是 sensenova、auto 或 deepseek")
     sense_key = os.environ.get("SENSENOVA_API_KEY") or os.environ.get("NLI_API_KEY", "")
     if not sense_key:
         print("      ⚠ 未配置 SENSENOVA_API_KEY，抽取仅使用 LLM_* fallback",
@@ -341,6 +385,7 @@ def create_extraction_client(mock: bool = False):
         api_key=sense_key,
         model=os.environ.get("SENSENOVA_MODEL", "sensenova-6.7-flash-lite"),
         temperature=0,
+        min_interval=float(os.environ.get("SENSENOVA_MIN_INTERVAL", "0.2")),
     )
     return FallbackLLMClient(primary, fallback)
 
