@@ -122,6 +122,17 @@ qualifiers 字段说明（所有枚举值必须严格使用以下取值）：
 
 【HHI 方向】direction: A_affects_B / B_affects_A / bidirectional（仅 HHI 关系使用）"""
 
+SYSTEM += """
+10. HAS_PHENOTYPE only describes an intrinsic feature manifested by the head entity.
+    Do not encode causal claims (X causes/induces Y) or predictive/risk claims
+    (X predicts Y, X is a risk factor for Y) as HAS_PHENOTYPE. If no existing
+    schema relation expresses the statement exactly, omit it.
+11. For MOLECULARLY_TARGETS, distinguish direct target evidence ("target of",
+    "antibody against", "inhibitor of", direct binding) from indirect evidence
+    (expression, abundance, cleavage, pathway co-occurrence) and computational
+    predictions. Never present predicted or indirect evidence as direct binding.
+"""
+
 _ENTITY_HINT = """实体类型表（选 head_type/tail_type 用）：
 中医：Herb(中药) HerbProcessed(饮片) Formula(方剂) PatentMedicine(中成药) Disease(中医病)
       Syndrome(证候) TreatmentPrinciple(治法) NatureElement/LocationElement(证素,闭类)

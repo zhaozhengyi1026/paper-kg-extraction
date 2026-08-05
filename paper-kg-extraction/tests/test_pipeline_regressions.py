@@ -111,8 +111,17 @@ def test_extraction_falls_back_to_deepseek():
 
 def test_extraction_provider_can_force_deepseek(monkeypatch):
     monkeypatch.setenv("EXTRACTION_PROVIDER", "deepseek")
-    monkeypatch.setattr("llm_client.LLMClient", lambda: _FakeLLM("deepseek"))
-    assert create_extraction_client().model == "deepseek"
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    captured = {}
+    def fake_client(**kwargs):
+        captured.update(kwargs)
+        return _FakeLLM(kwargs["model"])
+    monkeypatch.setattr("llm_client.LLMClient", fake_client)
+    assert create_extraction_client().model == "deepseek-v4-flash"
+    assert captured["base_url"] == "https://api.deepseek.com"
+    assert captured["model"] == "deepseek-v4-flash"
+    assert captured["reasoning_effort"] == "high"
+    assert captured["thinking_enabled"] is True
 
 
 def test_extraction_circuit_breaker_skips_failed_primary(monkeypatch):

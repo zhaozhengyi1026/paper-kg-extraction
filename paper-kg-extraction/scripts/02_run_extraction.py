@@ -44,6 +44,7 @@ from extract import extract_paper, new_run_id  # noqa: E402
 from llm_client import create_extraction_client  # noqa: E402
 from schema_loader import Schema  # noqa: E402
 from interaction_credibility import batch_enrich  # noqa: E402
+from quality_audit import run_quality_audit  # noqa: E402
 
 try:
     from tqdm import tqdm
@@ -243,6 +244,8 @@ def main():
     ap.add_argument("--no-resume", action="store_true", help="不续跑：即使输出文件已存在也重新抽取全部")
     ap.add_argument("--workers", type=int, default=int(os.environ.get("EXTRACTION_WORKERS", "6")),
                     help="并发处理论文数；SenseNova 建议 6，遇到 429 时调低")
+    ap.add_argument("--no-audit", action="store_true",
+                    help="跳过运行结束后的离线质量审计（默认自动审计）")
     args = ap.parse_args()
     if args.shard_count < 1 or not 0 <= args.shard_index < args.shard_count:
         ap.error("要求 shard-count >= 1 且 0 <= shard-index < shard-count")
@@ -511,6 +514,17 @@ def main():
             pct = count / n_rejects * 100 if n_rejects else 0
             print(f"    {reason}: {count} 条 ({pct:.1f}%)")
     print(f"  报告 -> {rep_path}")
+    if not args.no_audit:
+        audit_dir = out_path.parent / "audit"
+        try:
+            audit_summary = run_quality_audit(out_path, rejects_path, warns_path, audit_dir)
+            print(f"  自动审计 -> {audit_dir} ({audit_summary['records']} 条记录)")
+        except Exception as exc:
+            error_path = out_path.parent / "audit_error.json"
+            error_path.write_text(json.dumps({
+                "error": type(exc).__name__, "detail": str(exc), "run_id": run_id,
+            }, ensure_ascii=False, indent=2), encoding="utf-8")
+            print(f"  ! 自动审计失败，详情 -> {error_path}", file=sys.stderr)
 
 
 if __name__ == "__main__":

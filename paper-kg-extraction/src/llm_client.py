@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""OpenAI 兼容 LLM 客户端（NVIDIA NIM / OpenRouter / OpenAI / 本地 vLLM / SenseNova 均可）。
+"""OpenAI 兼容 LLM 客户端（DeepSeek 官方 / SenseNova / OpenRouter / 本地 vLLM）。
 
 通过环境变量配置，见 .env.example：
-    LLM_BASE_URL   例：https://integrate.api.nvidia.com/v1
-    LLM_API_KEY    你的 key
-    LLM_MODEL      例：deepseek-ai/deepseek-v3 / qwen/qwen2.5-72b-instruct
+    DEEPSEEK_BASE_URL   默认：https://api.deepseek.com
+    DEEPSEEK_API_KEY    DeepSeek 官方 key
+    DEEPSEEK_MODEL      默认：deepseek-v4-flash
     LLM_TEMPERATURE 默认 0（抽取要确定性）
 
 也可通过构造函数参数覆盖（用于创建 NLI 等辅助模型客户端）：
@@ -91,7 +91,9 @@ class LLMClient:
                  api_key: str | None = None,
                  model: str | None = None,
                  temperature: float | None = None,
-                 min_interval: float | None = None):
+                 min_interval: float | None = None,
+                 reasoning_effort: str | None = None,
+                 thinking_enabled: bool = False):
         self.mock = mock
         self.model = "mock" if mock else (model or os.environ.get("LLM_MODEL", ""))
         self.metrics = {"requests": 0, "successes": 0, "failures": 0,
@@ -108,6 +110,8 @@ class LLMClient:
                              float(os.environ.get("LLM_MIN_INTERVAL", str(_MIN_INTERVAL))))
         self.temperature = (temperature if temperature is not None
                             else float(os.environ.get("LLM_TEMPERATURE", "0") or 0))
+        self.reasoning_effort = reasoning_effort
+        self.thinking_enabled = thinking_enabled
         if not (self.base_url and self.api_key and self.model):
             raise RuntimeError(
                 "未配置 LLM。请在 .env 设 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL，或用 --mock 跑离线冒烟。")
@@ -146,6 +150,10 @@ class LLMClient:
                 )
                 if use_response_format:
                     kwargs["response_format"] = {"type": "json_object"}
+                if self.reasoning_effort:
+                    kwargs["reasoning_effort"] = self.reasoning_effort
+                if self.thinking_enabled:
+                    kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
                 resp = self._client.chat.completions.create(**kwargs)
                 txt = resp.choices[0].message.content or "{}"
                 result = _loads_lenient(txt)
@@ -325,16 +333,27 @@ def _mock_extract(user: str) -> dict:
 # ── 抽取与 NLI 客户端工厂 ──
 
 def create_extraction_client(mock: bool = False):
-    """Create SenseNova-primary extraction with the legacy LLM as fallback.
+    """Create SenseNova-primary extraction with official DeepSeek fallback.
 
-    ``SENSENOVA_*`` configures the primary model. Existing ``LLM_*`` variables
-    remain the fallback configuration, so current DeepSeek deployments continue
-    to work without renaming secrets.
+    ``SENSENOVA_*`` configures the primary model and ``DEEPSEEK_*`` configures
+    the fallback. NVIDIA NIM is intentionally not used.
     """
     if mock:
         return LLMClient(mock=True)
 
-    fallback = LLMClient()
+    deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "")
+    if not deepseek_key:
+        raise RuntimeError("未配置 DEEPSEEK_API_KEY，无法创建官方 DeepSeek 客户端")
+    fallback = LLMClient(
+        base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+        api_key=deepseek_key,
+        model=os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+        temperature=0,
+        min_interval=float(os.environ.get("DEEPSEEK_MIN_INTERVAL", "1.0")),
+        reasoning_effort=os.environ.get("DEEPSEEK_REASONING_EFFORT", "high"),
+        thinking_enabled=os.environ.get("DEEPSEEK_THINKING", "enabled").lower()
+        not in ("0", "false", "no", "disabled"),
+    )
     provider = os.environ.get("EXTRACTION_PROVIDER", "sensenova").strip().lower()
     if provider == "deepseek":
         return fallback

@@ -24,9 +24,9 @@
 cd paper-kg-extraction
 python -m venv .venv && .venv\Scripts\activate     # Windows；Linux/Mac: source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env        # 填 LLM 接口（NVIDIA NIM 免费额度足够，见 .env.example）
+cp .env.example .env        # 填 SenseNova 与 DeepSeek 官方 API 配置
 ```
-> 要求 Python ≥ 3.10。抽取用 OpenAI 兼容接口，NVIDIA NIM / OpenRouter / 本地 vLLM 都行。
+> 要求 Python ≥ 3.10。默认 SenseNova 优先，DeepSeek 官方 API fallback；NLI 使用相同顺序。
 
 ## 2. 先跑通（无需 API key，1 分钟）
 ```bash
@@ -54,7 +54,30 @@ python scripts/02_run_extraction.py --from db \
   --db ~/med-papers/metadata.db --limit 200 \
   --batch-id batch:pmc_oa:20260703:astragalus
 ```
-产物：`out/candidate_kg/paper_triples.jsonl` + `extraction_report.json`。
+产物：`out/candidate_kg/paper_triples.jsonl` + `extraction_report.json`。每次正常结束后还会
+自动生成 `out/candidate_kg/audit/quality_audit.tsv`、`quality_audit.jsonl` 和
+`quality_summary.json`；这些风险标记用于筛选人工复核对象，不等同于医学正确率。仅在明确需要时
+使用 `--no-audit` 跳过。
+
+如果先执行了跨论文合并，可对合并结果重新生成最终审计：
+
+```bash
+python src/quality_audit.py \
+  --accepted out/runs/RUN/paper_triples_merged.jsonl \
+  --rejects out/runs/RUN/paper_triples_rejects.jsonl \
+  --warnings out/runs/RUN/paper_triples_warnings.jsonl \
+  --out-dir out/runs/RUN/audit_merged
+```
+
+DeepSeek fallback 使用官方接口：
+
+```dotenv
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_API_KEY=sk-...
+DEEPSEEK_MODEL=deepseek-v4-flash
+DEEPSEEK_REASONING_EFFORT=high
+DEEPSEEK_THINKING=enabled
+```
 先 `--limit 20` 小批试跑，看 report 的 `reject_stats` 调 prompt / 换模型（见 `docs/EXTRACTION_GUIDE.md` §4）。
 
 ### ③ 验收自检

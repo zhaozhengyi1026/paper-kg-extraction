@@ -103,3 +103,42 @@ def test_provenance_preserves_nbsp_and_exact_span():
     assert result["ok"]
     assert result["evidence_sentence"] == unit
     assert unit[result["char_start"]:result["char_end"]] == result["evidence_sentence"]
+
+
+def test_no_donor_is_not_a_negation_cue():
+    assert not extract._has_negation(
+        "The NO donor significantly reduced restenosis",
+        "WM_TREATS", "NO donor", "restenosis",
+    )[0]
+
+
+def test_target_evidence_grade_handles_direct_and_indirect_forms():
+    assert extract._mechanism_evidence_grade("DAT is a target of amphetamine") == "direct"
+    assert extract._mechanism_evidence_grade("mepolizumab is an antibody against IL-5") == "direct"
+    assert extract._mechanism_evidence_grade("The treatment changed TP53 expression") == "indirect"
+
+
+def test_causal_or_predictive_claim_is_not_a_phenotype():
+    assert extract._phenotype_semantics_reason(
+        "Exposure", "Smoking caused endothelial dysfunction."
+    )
+    assert extract._phenotype_semantics_reason(
+        "LabTest", "Elevated CRP predicted mortality."
+    )
+    assert not extract._phenotype_semantics_reason(
+        "DiseaseWM", "Diabetes is characterized by hyperglycemia."
+    )
+
+
+def test_entity_matching_handles_alias_surface_variants():
+    aliases = {"DMP1": "dentin matrix protein 1", "PTSD": "post traumatic stress disorder"}
+    assert extract._entity_mentioned("dentin matrix protein-1", "DMP1 expression increased", aliases)
+    assert extract._entity_mentioned("post-traumatic stress disorders", "PTSD was diagnosed", aliases)
+    assert extract._entity_mentioned("β-catenin", "alpha and beta catenin were measured")
+
+
+def test_duplicate_evidence_prefers_stronger_complete_quote():
+    weak = {"confidence": 0.6, "evidence_sentence": "TP53 expression", "qualifiers": {}}
+    strong = {"confidence": 0.7, "evidence_sentence": "The compound directly binds to TP53.",
+              "qualifiers": {"evidence_grade": "in_vitro"}}
+    assert extract._edge_evidence_score(strong) > extract._edge_evidence_score(weak)

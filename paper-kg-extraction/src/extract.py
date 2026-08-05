@@ -173,12 +173,44 @@ def _mechanism_evidence_grade(evidence: str) -> str:
                   r"potential targets?|target network|enrichment analysis", low):
         return "predicted"
     if _re.search(r"\b(direct(?:ly)?\s+(bind|target|interact)|bind(?:s|ing)?\s+to|"
-                  r"binding affinity|pull[- ]down|surface plasmon resonance)\b", low):
+                  r"binding affinity|pull[- ]down|surface plasmon resonance|"
+                  r"(?:is|was|are|were)\s+(?:a\s+|an\s+)?target\s+of|"
+                  r"antibod(?:y|ies)\s+(?:against|to)|(?:selective\s+)?inhibitor\s+of)\b", low):
         return "direct"
     if _re.search(r"\b(inhibit|suppress|down[- ]?regulat|up[- ]?regulat|activat|"
-                  r"knockdown|silenc|phosphorylat|expression)\w*\b", low):
+                  r"knockdown|silenc|phosphorylat)\w*\b", low):
         return "regulatory"
+    if _re.search(r"\b(expression|expressed|cleavage|co[- ]?express|abundance|level)\w*\b", low):
+        return "indirect"
     return "indirect"
+
+
+_CAUSAL_OR_PREDICTIVE_RE = _re.compile(
+    r"\b(caus(?:e|ed|es|ing)|induc(?:e|ed|es|ing)|trigger(?:ed|s|ing)?|"
+    r"lead(?:s|ing)?\s+to|result(?:s|ed|ing)?\s+in|predict(?:s|ed|ive|or)?|"
+    r"risk\s+(?:factor|predictor)|associated\s+with\s+(?:an?\s+)?(?:increased|reduced)\s+risk)\b",
+    _re.IGNORECASE,
+)
+
+
+def _phenotype_semantics_reason(head_type: str, evidence: str) -> str:
+    """Reject causal/predictive claims that cannot truthfully mean HAS_PHENOTYPE."""
+    if head_type in {"Exposure", "LabTest", "Procedure"} and _CAUSAL_OR_PREDICTIVE_RE.search(evidence):
+        return "causal or predictive evidence does not establish an intrinsic phenotype"
+    return ""
+
+
+def _edge_evidence_score(edge: dict) -> tuple:
+    """Rank duplicate same-paper edges without changing their output contract."""
+    evidence = (edge.get("evidence_sentence") or "").strip()
+    qualifiers = edge.get("qualifiers") or {}
+    complete_sentence = int(bool(_re.search(r"[.!?。！？]$", evidence)))
+    proposition = int(bool(_re.search(r"\b(?:is|are|was|were|has|have|had|"
+                                      r"bind\w*|target\w*|inhibit\w*|treat\w*|"
+                                      r"associat\w*|caus\w*|improv\w*)\b", evidence,
+                                      _re.IGNORECASE)))
+    return (float(edge.get("confidence") or 0), proposition, complete_sentence,
+            len(qualifiers), min(len(evidence), 500))
 
 
 _jieba = None
@@ -308,7 +340,7 @@ def extract_paper(paper: dict, schema, llm, run_id: str,
     tier = _tier_from_level(paper.get("evidence_level", ""))
     conf = round(_BASE.get("teacher_llm", 0.7) * _TIER_FACTOR.get(tier, 0.85), 3)
 
-    seen_edges: set[str] = set()
+    edge_positions: dict[tuple[str, str], int] = {}
     out: list[dict] = []
 
     # ── NLI 客户端 + 缓存 + 类型一致性 ──
@@ -384,10 +416,17 @@ def extract_paper(paper: dict, schema, llm, run_id: str,
             if extraction_model:
                 edge["extraction_model"] = extraction_model
                 edge["provenance"]["extraction_model"] = extraction_model
-            if edge["edge_id"] in seen_edges:
+            # An edge ID intentionally excludes provenance. Deduplicate only
+            # within this paper/source and retain the stronger evidence quote.
+            dedup_key = (edge.get("evidence_source_id", ""), edge["edge_id"])
+            if dedup_key in edge_positions:
                 _bump(stats, "dup_in_run")
+                pos = edge_positions[dedup_key]
+                if _edge_evidence_score(edge) > _edge_evidence_score(out[pos]):
+                    out[pos] = edge
+                    _bump(stats, "dup_replaced_by_better_evidence")
                 continue
-            seen_edges.add(edge["edge_id"])
+            edge_positions[dedup_key] = len(out)
             out.append(edge)
     return out
 
@@ -443,8 +482,9 @@ def _mask_non_negative_constructions(text: str) -> str:
                          flags=_re.IGNORECASE)
     biochemical_context = _re.search(
         r"\b(nitric\s+oxide|iNOS|eNOS|nNOS|NO\s+(?:production|generation|release|level|synthesis)|"
-        r"(?:produce|release|generate|synthesize)\w*\s+NO)\b",
+        r"NO[- ]?(?:donor|releasing|mediated)|(?:produce|release|generate|synthesize)\w*\s+NO)\b",
         masked,
+        _re.IGNORECASE,
     )
     if biochemical_context:
         masked = _re.sub(r"\bNO\b", "__NITRIC_OXIDE__", masked)
@@ -471,7 +511,20 @@ def _entity_mentioned(name: str, evidence: str,
     if not name or not evidence:
         return False
     name = name.strip()
+    def _surface(value: str) -> str:
+        value = value.casefold().replace("α", "alpha").replace("β", "beta").replace("γ", "gamma")
+        value = _re.sub(r"(?<=\w)[‐‑‒–—−](?=\w)", " ", value)
+        value = _re.sub(r"[^\w]+", " ", value, flags=_re.UNICODE).strip()
+        words = value.split()
+        if words and len(words[-1]) > 3 and words[-1].endswith("s") and not words[-1].endswith("ss"):
+            words[-1] = words[-1][:-1]
+        return " ".join(words)
+
     if name.lower() in evidence.lower():
+        return True
+    name_surface = _surface(name)
+    evidence_surface = _surface(evidence)
+    if name_surface and _re.search(r"(?:^|\s)" + _re.escape(name_surface) + r"(?:$|\s)", evidence_surface):
         return True
     name_compact = _re.sub(r'\s+', '', name)
     ev_compact = _re.sub(r'\s+', '', evidence)
@@ -480,19 +533,20 @@ def _entity_mentioned(name: str, evidence: str,
     if paper_abbrs:
         name_lower = name.lower()
         for abbr, full in paper_abbrs.items():
-            if full == name_lower:
+            if full == name_lower or _surface(full) == name_surface:
                 if _re.search(r'\b' + _re.escape(abbr) + r'\b', evidence):
                     return True
                 if abbr.lower() in evidence.lower():
                     return True
         upper = name.upper()
-        if upper in paper_abbrs:
-            full = paper_abbrs[upper]
-            if full.lower() in evidence.lower():
-                return True
-            full_compact = _re.sub(r'\s+', '', full)
-            if len(full_compact) >= 2 and full_compact.lower() in ev_compact.lower():
-                return True
+        for alias_key in (upper, upper.rstrip("S")):
+            if alias_key in paper_abbrs:
+                full = paper_abbrs[alias_key]
+                if full.lower() in evidence.lower() or _surface(full) in evidence_surface:
+                    return True
+                full_compact = _re.sub(r'\s+', '', full)
+                if len(full_compact) >= 2 and full_compact.lower() in ev_compact.lower():
+                    return True
     if name.isascii() and _re.search(r'[a-zA-Z]', name):
         try:
             escaped = _re.escape(name)
@@ -674,6 +728,13 @@ def _make_edge(tr, unit, schema, run_id, method, tier, conf,
         _reject("weak_relation_evidence", weak_reason)
         return None
 
+    if rel == "HAS_PHENOTYPE":
+        phenotype_reason = _phenotype_semantics_reason(ht, evidence_text)
+        if phenotype_reason:
+            _bump(stats, "causal_semantics_mismatch")
+            _reject("causal_semantics_mismatch", phenotype_reason)
+            return None
+
     # ── 3.5) NLI 语义校验 ──
     if nli_llm is not None and nli_cache is not None and needs_nli(rel):
         nli_label, nli_hyp = _run_nli_check(
@@ -724,14 +785,6 @@ def _make_edge(tr, unit, schema, run_id, method, tier, conf,
             _bump(stats, "mechanism:indirect")
             _warn("indirect_mechanism",
                   f"MOLECULARLY_TARGETS lacks direct binding/regulation evidence (confidence→{conf})")
-
-    if rel == "HAS_PHENOTYPE" and ht == "Exposure" and _re.search(
-        r"\b(caus(?:e|ed|es|ing)|induc(?:e|ed|es|ing)|trigger(?:ed|s|ing)?)\b",
-        evidence_text, _re.IGNORECASE,
-    ):
-        _bump(stats, "exposure_causal_semantics")
-        _warn("exposure_causal_semantics",
-              "Schema permits Exposure HAS_PHENOTYPE, but evidence uses explicit causal wording")
 
     # ── 4) 否定检测 ──
     neg, neg_detail = _has_negation(evidence_text, rel, head, tail)
