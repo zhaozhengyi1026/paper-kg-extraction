@@ -130,6 +130,19 @@ def test_unknown_total_progress_does_not_coerce_tqdm_to_bool():
     assert "and pbar is None" in script
 
 
+def test_empty_json_object_is_marked_for_one_retry():
+    from llm_client import _loads_lenient
+    result = _loads_lenient("{}")
+    assert result["triples"] == []
+    assert result["_empty_object_response"] is True
+
+
+def test_explicit_empty_triples_is_not_marked_for_retry():
+    from llm_client import _loads_lenient
+    result = _loads_lenient('{"triples": []}')
+    assert result == {"triples": []}
+
+
 def test_extraction_circuit_breaker_skips_failed_primary(monkeypatch):
     monkeypatch.setenv("LLM_CIRCUIT_FAILURES", "1")
     primary = _FakeLLM("sensenova", error=RuntimeError("down"))

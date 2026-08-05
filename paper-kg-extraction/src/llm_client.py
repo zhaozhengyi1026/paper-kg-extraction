@@ -97,7 +97,8 @@ class LLMClient:
         self.mock = mock
         self.model = "mock" if mock else (model or os.environ.get("LLM_MODEL", ""))
         self.metrics = {"requests": 0, "successes": 0, "failures": 0,
-                        "retries": 0, "rate_limits": 0, "latency_seconds": 0.0}
+                        "retries": 0, "rate_limits": 0, "latency_seconds": 0.0,
+                        "empty_object_responses": 0}
         self.metrics.update({"prompt_tokens": 0, "completion_tokens": 0,
                              "total_tokens": 0})
         self._metrics_lock = threading.Lock()
@@ -135,6 +136,7 @@ class LLMClient:
         import random as _random
         use_response_format = os.environ.get("LLM_RESPONSE_FORMAT", "1") not in ("0", "no", "false")
         last = None
+        empty_object_retried = False
         for attempt in range(retries):
             # Per-provider throttle is shared across concurrent paper workers.
             _rate_limit(self.base_url, self.min_interval)
@@ -157,6 +159,19 @@ class LLMClient:
                 resp = self._client.chat.completions.create(**kwargs)
                 txt = resp.choices[0].message.content or "{}"
                 result = _loads_lenient(txt)
+                if result.pop("_empty_object_response", False):
+                    with self._metrics_lock:
+                        self.metrics["empty_object_responses"] += 1
+                    if not empty_object_retried and attempt < retries - 1:
+                        empty_object_retried = True
+                        with self._metrics_lock:
+                            self.metrics["retries"] += 1
+                        print("      ⚠ LLM 返回空对象 {}，额外重试 1 次",
+                              file=sys.stderr, flush=True)
+                        time.sleep(1.0)
+                        continue
+                    print("      ℹ LLM 再次返回空对象 {}，按无三元组接受",
+                          file=sys.stderr, flush=True)
                 result["_model_used"] = self.model
                 usage = getattr(resp, "usage", None)
                 with self._metrics_lock:
@@ -274,11 +289,14 @@ def _loads_lenient(txt: str) -> dict:
                     raise
         else:
             raise
-    # NLI 响应有 "results" 而非 "triples"，不警告
-    if "triples" not in result and "results" not in result:
+    empty_object = result == {}
+    # NLI 响应有 "results" 而非 "triples"，不警告。裸 {} 由调用层重试一次。
+    if not empty_object and "triples" not in result and "results" not in result:
         print(f"    WARN: LLM JSON 解析后无 triples/results 字段，raw={txt[:120]!r}",
               file=sys.stderr, flush=True)
     result.setdefault("triples", [])
+    if empty_object:
+        result["_empty_object_response"] = True
     return result
 
 
