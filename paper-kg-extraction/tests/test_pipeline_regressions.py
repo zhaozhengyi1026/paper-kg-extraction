@@ -124,6 +124,12 @@ def test_extraction_provider_can_force_deepseek(monkeypatch):
     assert captured["thinking_enabled"] is True
 
 
+def test_unknown_total_progress_does_not_coerce_tqdm_to_bool():
+    script = (ROOT / "scripts" / "02_run_extraction.py").read_text(encoding="utf-8")
+    assert "and not pbar" not in script
+    assert "and pbar is None" in script
+
+
 def test_extraction_circuit_breaker_skips_failed_primary(monkeypatch):
     monkeypatch.setenv("LLM_CIRCUIT_FAILURES", "1")
     primary = _FakeLLM("sensenova", error=RuntimeError("down"))

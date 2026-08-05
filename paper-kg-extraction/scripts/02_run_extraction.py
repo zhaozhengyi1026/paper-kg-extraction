@@ -460,7 +460,7 @@ def main():
                 print(f"[{pi}/{denominator}] {title} -> {len(edges)} 边 (累计 {n_edges}){suffix}",
                       file=sys.stderr, flush=True)
 
-            if n_papers % 20 == 0 and not pbar:
+            if n_papers % 20 == 0 and pbar is None:
                 print(f"  ...{n_papers} 篇 / {n_edges} 边（accepted={stats.get('accepted',0)}）",
                       file=sys.stderr)
         if executor is not None:
