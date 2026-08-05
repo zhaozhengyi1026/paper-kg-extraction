@@ -29,6 +29,8 @@ def test_audit_saves_all_artifacts(tmp_path):
     summary = run_quality_audit(accepted, rejected, warnings, out_dir)
     assert summary["category_counts"] == {"accepted": 1, "rejected": 1, "warning": 1}
     assert summary["risk_flag_counts"]["causal_or_predictive_phenotype"] == 1
+    assert summary["risk_flag_counts_by_category"]["accepted"]["causal_or_predictive_phenotype"] == 1
+    assert summary["risk_flag_counts_by_category"]["rejected"]["entity_mismatch_reject_review"] == 1
     assert (out_dir / "quality_audit.tsv").exists()
     assert (out_dir / "quality_audit.jsonl").exists()
     assert json.loads((out_dir / "quality_summary.json").read_text(encoding="utf-8"))["records"] == 3

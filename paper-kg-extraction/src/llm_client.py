@@ -93,7 +93,8 @@ class LLMClient:
                  temperature: float | None = None,
                  min_interval: float | None = None,
                  reasoning_effort: str | None = None,
-                 thinking_enabled: bool = False):
+                 thinking_enabled: bool = False,
+                 max_completion_tokens: int | None = None):
         self.mock = mock
         self.model = "mock" if mock else (model or os.environ.get("LLM_MODEL", ""))
         self.metrics = {"requests": 0, "successes": 0, "failures": 0,
@@ -113,6 +114,8 @@ class LLMClient:
                             else float(os.environ.get("LLM_TEMPERATURE", "0") or 0))
         self.reasoning_effort = reasoning_effort
         self.thinking_enabled = thinking_enabled
+        self.max_completion_tokens = (max_completion_tokens if max_completion_tokens is not None
+                                      else int(os.environ.get("LLM_MAX_COMPLETION_TOKENS", "4096")))
         if not (self.base_url and self.api_key and self.model):
             raise RuntimeError(
                 "未配置 LLM。请在 .env 设 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL，或用 --mock 跑离线冒烟。")
@@ -156,6 +159,8 @@ class LLMClient:
                     kwargs["reasoning_effort"] = self.reasoning_effort
                 if self.thinking_enabled:
                     kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+                if self.max_completion_tokens > 0:
+                    kwargs["max_tokens"] = self.max_completion_tokens
                 resp = self._client.chat.completions.create(**kwargs)
                 txt = resp.choices[0].message.content or "{}"
                 result = _loads_lenient(txt)
@@ -371,6 +376,7 @@ def create_extraction_client(mock: bool = False):
         reasoning_effort=os.environ.get("DEEPSEEK_REASONING_EFFORT", "high"),
         thinking_enabled=os.environ.get("DEEPSEEK_THINKING", "enabled").lower()
         not in ("0", "false", "no", "disabled"),
+        max_completion_tokens=int(os.environ.get("DEEPSEEK_MAX_COMPLETION_TOKENS", "4096")),
     )
     provider = os.environ.get("EXTRACTION_PROVIDER", "sensenova").strip().lower()
     if provider == "deepseek":
@@ -389,6 +395,7 @@ def create_extraction_client(mock: bool = False):
         model=os.environ.get("SENSENOVA_MODEL", "sensenova-6.7-flash-lite"),
         temperature=0,
         min_interval=float(os.environ.get("SENSENOVA_MIN_INTERVAL", "0.2")),
+        max_completion_tokens=int(os.environ.get("SENSENOVA_MAX_COMPLETION_TOKENS", "4096")),
     )
     return FallbackLLMClient(primary, fallback)
 
@@ -418,6 +425,7 @@ def create_nli_client(fallback_llm=None):
             api_key=nli_key,
             model=nli_model,
             temperature=0,
+            max_completion_tokens=int(os.environ.get("NLI_MAX_COMPLETION_TOKENS", "512")),
         )
         if fallback_llm is not None:
             deepseek = getattr(fallback_llm, "fallback", fallback_llm)

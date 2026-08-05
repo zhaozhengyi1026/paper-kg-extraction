@@ -166,6 +166,22 @@ def _weak_relation_reason(relation: str, evidence: str) -> str:
     return ""
 
 
+_FINITE_PREDICATE_RE = _re.compile(
+    r"\b(?:is|are|was|were|has|have|had|shows?|showed|demonstrat\w*|"
+    r"detect\w*|diagnos\w*|measur\w*|interact\w*|bind\w*|target\w*|"
+    r"inhibit\w*|activat\w*|regulat\w*|express\w*|associat\w*|"
+    r"correlat\w*|treat\w*|improv\w*|reduc\w*|caus\w*|induc\w*|"
+    r"locali[sz]\w*|present\w*|characteri[sz]\w*)\b|"
+    r"治疗|改善|降低|检测|诊断|表达|调控|靶向|相关|位于|表现",
+    _re.IGNORECASE,
+)
+
+
+def _neutral_evidence_is_fragment(evidence: str) -> bool:
+    """Return true when neutral NLI input is only a noun/preposition fragment."""
+    return not bool(_FINITE_PREDICATE_RE.search(evidence or ""))
+
+
 def _mechanism_evidence_grade(evidence: str) -> str:
     """Classify target evidence without changing relation or schema."""
     low = evidence.lower()
@@ -174,7 +190,8 @@ def _mechanism_evidence_grade(evidence: str) -> str:
         return "predicted"
     if _re.search(r"\b(direct(?:ly)?\s+(bind|target|interact)|bind(?:s|ing)?\s+to|"
                   r"binding affinity|pull[- ]down|surface plasmon resonance|"
-                  r"(?:is|was|are|were)\s+(?:a\s+|an\s+)?target\s+of|"
+                  r"(?:is|was|are|were)\s+(?:a\s+|an\s+)?(?:direct\s+|downstream\s+|specific\s+)?target\s+of|"
+                  r"\btarget(?:s|ed|ing)?\b|"
                   r"antibod(?:y|ies)\s+(?:against|to)|(?:selective\s+)?inhibitor\s+of)\b", low):
         return "direct"
     if _re.search(r"\b(inhibit|suppress|down[- ]?regulat|up[- ]?regulat|activat|"
@@ -255,8 +272,11 @@ def _extract_abbreviations(paper: dict) -> dict[str, str]:
              "study", "treatment", "expression", "patients", "disease", "gene",
              "protein", "level", "levels", "group", "groups", "using"}
 
-    for m in _re.finditer(r"\(([A-Z][A-Za-z0-9-]{1,11})\)", text):
+    for m in _re.finditer(r"\(([A-Za-z0-9][A-Za-z0-9/+\-]{1,15})\)", text):
         raw_abbr = m.group(1)
+        if not (_re.search(r"[A-Z]", raw_abbr) and
+                (_re.search(r"\d|[-/+]|[A-Z].*[A-Z]", raw_abbr))):
+            continue
         abbr = raw_abbr.upper()
         match_abbr = abbr[:-1] if raw_abbr.endswith("s") and len(abbr) > 2 else abbr
         before = text[:m.start()]
@@ -287,6 +307,8 @@ def _extract_abbreviations(paper: dict) -> dict[str, str]:
                     best_n = len(cand)
         if best:
             abbrs[abbr] = best
+        elif words and "-" in words[-1] and len(words[-1].strip(" ,.;:[]")) >= 4:
+            abbrs[abbr] = words[-1].strip(" ,.;:[]").lower()
         elif len(words) >= 2:
             fallback = " ".join(words[-2:]).strip(" ,.;:[]").lower()
             if all(w.lower().strip(" ,.;:[]") not in _stop for w in words[-2:]):
@@ -442,6 +464,17 @@ def _has_negation(evidence: str, relation: str,
         return False, ""
     if relation not in _AFFIRMATIVE_RELATIONS:
         return False, ""
+    absence_feature = _re.search(
+        r"^\s*(?:a\s+|an\s+|the\s+)?(?:lack|absence|loss|deficienc\w*|"
+        r"negative|no\s+evidence|without)\b", tail, _re.IGNORECASE,
+    )
+    if absence_feature and relation in {"HAS_PHENOTYPE", "DIAGNOSED_BY", "MEASURES"}:
+        return False, ""
+    if relation == "HAS_PHENOTYPE" and _re.search(
+        r"\b(?:characteri[sz]ed|manifested|presented)\s+by\b", evidence, _re.IGNORECASE,
+    ) and not _re.search(r"\bnot\s+(?:characteri[sz]ed|manifested|presented)\s+by\b",
+                         evidence, _re.IGNORECASE):
+        return False, ""
     cleaned = _mask_non_negative_constructions(evidence)
     cue = _RELATION_POLARITY_CUES.get(relation, "effect|association|interaction")
     tail_pattern = _entity_scope_pattern(tail)
@@ -526,8 +559,8 @@ def _entity_mentioned(name: str, evidence: str,
     evidence_surface = _surface(evidence)
     if name_surface and _re.search(r"(?:^|\s)" + _re.escape(name_surface) + r"(?:$|\s)", evidence_surface):
         return True
-    name_compact = _re.sub(r'\s+', '', name)
-    ev_compact = _re.sub(r'\s+', '', evidence)
+    name_compact = _re.sub(r'[^A-Za-z0-9α-ωΑ-Ω\u4e00-\u9fff]+', '', name)
+    ev_compact = _re.sub(r'[^A-Za-z0-9α-ωΑ-Ω\u4e00-\u9fff]+', '', evidence)
     if len(name_compact) >= 2 and name_compact.lower() in ev_compact.lower():
         return True
     if paper_abbrs:
@@ -547,6 +580,14 @@ def _entity_mentioned(name: str, evidence: str,
                 full_compact = _re.sub(r'\s+', '', full)
                 if len(full_compact) >= 2 and full_compact.lower() in ev_compact.lower():
                     return True
+    prefix_match = _re.match(r"^(human|mouse|murine|rat)\s+(.+)$", name, _re.IGNORECASE)
+    if prefix_match:
+        species_prefix = {"human": "h", "mouse": "m", "murine": "m", "rat": "r"}[
+            prefix_match.group(1).lower()
+        ]
+        short = species_prefix + _re.sub(r"[^A-Za-z0-9]", "", prefix_match.group(2))
+        if _re.search(r"\b" + _re.escape(short) + r"\b", evidence, _re.IGNORECASE):
+            return True
     if name.isascii() and _re.search(r'[a-zA-Z]', name):
         try:
             escaped = _re.escape(name)
@@ -747,6 +788,12 @@ def _make_edge(tr, unit, schema, run_id, method, tier, conf,
             _reject("nli_contradiction", detail)
             return None
         elif nli_label == "neutral":
+            if _neutral_evidence_is_fragment(evidence_text):
+                _bump(stats, "nli_neutral_weak_evidence")
+                detail = f"NLI neutral and evidence lacks a complete relation predicate: {nli_hyp}"
+                print("      REJ nli weak: " + detail[:120], file=sys.stderr, flush=True)
+                _reject("nli_neutral_weak_evidence", detail)
+                return None
             conf = round(conf * _NLI_NEUTRAL_FACTOR, 3)
             detail = f"NLI neutral: evidence does not entail {nli_hyp} (confidence→{conf})"
             print("      ⚠ nli_neutral: " + detail[:120], file=sys.stderr, flush=True)

@@ -127,6 +127,7 @@ def papers_from_db(db_path: str, limit: int, batch_id: str,
 def papers_from_json(path: str, batch_id: str, limit: int = 0):
     p = Path(path)
     files = sorted(p.glob("*.json*")) if p.is_dir() else [p]
+    emitted = 0
     for fp in files:
         txt = fp.read_text(encoding="utf-8").strip()
         docs = []
@@ -138,13 +139,20 @@ def papers_from_json(path: str, batch_id: str, limit: int = 0):
         else:
             obj = json.loads(txt)
             docs = obj if isinstance(obj, list) else [obj]
-        count = 0
         for d in docs:
+            if not isinstance(d, dict) or not any(d.get(key) for key in
+                                                  ("source_id", "pmcid", "pmid", "doi", "title")):
+                continue
             d.setdefault("paper_batch_id", batch_id)
             yield d
-            count += 1
-            if limit > 0 and count >= limit:
+            emitted += 1
+            if limit > 0 and emitted >= limit:
                 return
+
+
+def count_json_papers(path: str, limit: int = 0) -> int:
+    count = sum(1 for _ in papers_from_json(path, "batch:count-only", limit))
+    return min(count, limit) if limit > 0 else count
 
 
 def paper_source_id(paper: dict) -> str:
@@ -197,13 +205,21 @@ def _sha256_file(path: Path) -> str:
 
 
 def reproducibility_metadata(input_manifest: Path) -> dict:
-    try:
-        commit = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=ROOT.parent,
-            text=True, stderr=subprocess.DEVNULL,
-        ).strip()
-    except (OSError, subprocess.SubprocessError):
-        commit = "unknown"
+    deploy_commit = ROOT / ".deploy_commit"
+    if os.environ.get("CODE_VERSION"):
+        commit = os.environ["CODE_VERSION"].strip()
+    elif deploy_commit.exists() and deploy_commit.read_text(encoding="utf-8").strip():
+        commit = deploy_commit.read_text(encoding="utf-8").strip()
+    else:
+        commit = ""
+    if not commit:
+        try:
+            commit = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=ROOT.parent,
+                text=True, stderr=subprocess.DEVNULL,
+            ).strip()
+        except (OSError, subprocess.SubprocessError):
+            commit = "unknown"
     dependencies = {}
     for package in ("openai", "PyYAML", "zhconv", "tqdm"):
         try:
@@ -277,10 +293,9 @@ def main():
 
     # Count papers for progress display
     if args.src == "json" and args.input:
-        inp = Path(args.input)
-        total = len(sorted(inp.glob("*.json*"))) if inp.is_dir() else 1
+        total = count_json_papers(args.input, args.limit)
     else:
-        total = args.limit
+        total = args.limit if args.limit > 0 else None
 
     # Resume: read existing output to skip already-processed papers
     seen_ids = set()
@@ -324,8 +339,7 @@ def main():
     manifest_path = out_path.parent / "input_manifest.jsonl"
     # JSONL manifest is appended while streaming; it stays valid for very large corpora.
     manifest_path.write_text("", encoding="utf-8")
-    total = args.limit if args.limit > 0 else None
-    remaining = total
+    remaining = max(total - len(seen_ids), 0) if total is not None else None
     print()
     scope = f"最多 {total}" if total else "全部"
     print(f"流式加载论文（{scope}，分片 {args.shard_index}/{args.shard_count}），开始…",
@@ -339,7 +353,7 @@ def main():
 
     if HAS_TQDM:
         pbar = tqdm(
-            total=total,
+            total=remaining,
             desc="抽取中",
             unit="篇",
             bar_format="{desc:35.35}{percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]",

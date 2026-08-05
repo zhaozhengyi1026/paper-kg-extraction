@@ -21,7 +21,7 @@ NEGATION_RE = re.compile(
 )
 CAUSAL_RE = re.compile(r"\b(?:caus\w*|induc\w*|trigger\w*|predict\w*|risk factor)\b", re.I)
 DIRECT_TARGET_RE = re.compile(
-    r"\b(?:direct(?:ly)?\s+bind\w*|target of|antibod(?:y|ies) (?:against|to)|"
+    r"\b(?:direct(?:ly)?\s+bind\w*|(?:downstream\s+|specific\s+)?target of|target(?:s|ed|ing)|antibod(?:y|ies) (?:against|to)|"
     r"inhibitor of|binding affinity)\b", re.I,
 )
 PREDICTED_TARGET_RE = re.compile(
@@ -51,7 +51,19 @@ def _entity_present(entity: str, evidence: str) -> bool:
     def norm(value: str) -> str:
         value = value.casefold().replace("α", "alpha").replace("β", "beta").replace("γ", "gamma")
         return re.sub(r"[^\w]+", "", value)
-    return bool(entity and norm(entity) in norm(evidence))
+    if not entity:
+        return False
+    entity_norm, evidence_norm = norm(entity), norm(evidence)
+    if entity_norm in evidence_norm:
+        return True
+    prefix = re.match(r"^(human|mouse|murine|rat)\s+(.+)$", entity, re.I)
+    if prefix:
+        short_prefix = {"human": "h", "mouse": "m", "murine": "m", "rat": "r"}[
+            prefix.group(1).lower()
+        ]
+        short = short_prefix + norm(prefix.group(2))
+        return short in evidence_norm
+    return False
 
 
 def _flags(record: dict, category: str) -> list[str]:
@@ -63,6 +75,11 @@ def _flags(record: dict, category: str) -> list[str]:
     if record.get("tail") and not _entity_present(record["tail"], evidence):
         flags.append("tail_not_literal_in_evidence")
     scrubbed = re.sub(r"\bnot only\b|\bNO[- ]?(?:donor|releasing|mediated)\b", "", evidence, flags=re.I)
+    if relation in {"HAS_PHENOTYPE", "DIAGNOSED_BY", "MEASURES"} and re.search(
+        r"^\s*(?:a\s+|an\s+|the\s+)?(?:lack|absence|loss|deficienc\w*|negative|without)\b",
+        record.get("tail", ""), re.I,
+    ):
+        scrubbed = ""
     if NEGATION_RE.search(scrubbed):
         flags.append("negated_evidence_review")
     if len(evidence.strip()) < 35 and category == "accepted":
@@ -90,6 +107,7 @@ def run_quality_audit(accepted_path: Path, rejects_path: Path, warnings_path: Pa
     reasons = Counter()
     relations = Counter()
     flags = Counter()
+    flags_by_category = {category: Counter() for category in ("accepted", "rejected", "warning")}
     for category, path in (("accepted", accepted_path), ("rejected", rejects_path),
                            ("warning", warnings_path)):
         for record in _records(path):
@@ -112,6 +130,7 @@ def run_quality_audit(accepted_path: Path, rejects_path: Path, warnings_path: Pa
             reasons[f"{category}:{row['reason'] or 'none'}"] += 1
             relations[f"{category}:{row['relation'] or 'none'}"] += 1
             flags.update(record_flags)
+            flags_by_category[category].update(record_flags)
 
     with (out_dir / "quality_audit.tsv").open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=FIELDS, dialect="excel-tab")
@@ -124,6 +143,9 @@ def run_quality_audit(accepted_path: Path, rejects_path: Path, warnings_path: Pa
         "records": len(rows), "category_counts": dict(categories),
         "reason_counts": dict(reasons), "relation_counts": dict(relations),
         "risk_flag_counts": dict(flags),
+        "risk_flag_counts_by_category": {
+            category: dict(counts) for category, counts in flags_by_category.items()
+        },
         "important_note": "Risk flags are review candidates, not medical ground truth.",
     }
     (out_dir / "quality_summary.json").write_text(

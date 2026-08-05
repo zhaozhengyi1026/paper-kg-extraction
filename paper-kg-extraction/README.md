@@ -77,6 +77,8 @@ DEEPSEEK_API_KEY=sk-...
 DEEPSEEK_MODEL=deepseek-v4-flash
 DEEPSEEK_REASONING_EFFORT=high
 DEEPSEEK_THINKING=enabled
+DEEPSEEK_MAX_COMPLETION_TOKENS=4096
+NLI_MAX_COMPLETION_TOKENS=512
 ```
 先 `--limit 20` 小批试跑，看 report 的 `reject_stats` 调 prompt / 换模型（见 `docs/EXTRACTION_GUIDE.md` §4）。
 

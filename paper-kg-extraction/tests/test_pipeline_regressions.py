@@ -143,6 +143,17 @@ def test_explicit_empty_triples_is_not_marked_for_retry():
     assert result == {"triples": []}
 
 
+def test_json_directory_count_skips_summary_and_limit_is_global(tmp_path):
+    script = _load_runner()
+    for index in range(3):
+        (tmp_path / f"PMC{index}.json").write_text(json.dumps({
+            "pmcid": f"PMC{index}", "title": f"paper {index}", "sections": []
+        }), encoding="utf-8")
+    (tmp_path / "sample_summary.json").write_text(json.dumps({"papers": 3}), encoding="utf-8")
+    assert script.count_json_papers(str(tmp_path)) == 3
+    assert len(list(script.papers_from_json(str(tmp_path), "batch:test", limit=2))) == 2
+
+
 def test_extraction_circuit_breaker_skips_failed_primary(monkeypatch):
     monkeypatch.setenv("LLM_CIRCUIT_FAILURES", "1")
     primary = _FakeLLM("sensenova", error=RuntimeError("down"))

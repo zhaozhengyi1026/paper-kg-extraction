@@ -131,6 +131,10 @@ SYSTEM += """
     "antibody against", "inhibitor of", direct binding) from indirect evidence
     (expression, abundance, cleavage, pathway co-occurrence) and computational
     predictions. Never present predicted or indirect evidence as direct binding.
+12. The head and tail strings must occur literally in evidence_sentence. If the
+    sentence uses an acronym, hyphenated form, or local surface form, output that
+    exact form (for example 4-HNE, TZD, hSPC25, RACK-1). Do not replace it with a
+    full name found elsewhere in the paper; canonicalization is handled after extraction.
 """
 
 _ENTITY_HINT = """实体类型表（选 head_type/tail_type 用）：

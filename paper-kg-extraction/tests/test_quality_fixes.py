@@ -116,6 +116,8 @@ def test_target_evidence_grade_handles_direct_and_indirect_forms():
     assert extract._mechanism_evidence_grade("DAT is a target of amphetamine") == "direct"
     assert extract._mechanism_evidence_grade("mepolizumab is an antibody against IL-5") == "direct"
     assert extract._mechanism_evidence_grade("The treatment changed TP53 expression") == "indirect"
+    assert extract._mechanism_evidence_grade("HSF-2 is a downstream target of b-FGF") == "direct"
+    assert extract._mechanism_evidence_grade("ADP-ribose polymers target topoisomerase I") == "direct"
 
 
 def test_causal_or_predictive_claim_is_not_a_phenotype():
@@ -135,6 +137,31 @@ def test_entity_matching_handles_alias_surface_variants():
     assert extract._entity_mentioned("dentin matrix protein-1", "DMP1 expression increased", aliases)
     assert extract._entity_mentioned("post-traumatic stress disorders", "PTSD was diagnosed", aliases)
     assert extract._entity_mentioned("β-catenin", "alpha and beta catenin were measured")
+    assert extract._entity_mentioned("RACK1", "a stable complex with RACK-1")
+    assert extract._entity_mentioned("human SPC25", "hSPC25 interacted with HEC1")
+
+
+def test_numeric_leading_parenthetical_abbreviation():
+    paper = {"title": "4-hydroxy-2-nonenal (4-HNE) signaling", "abstract": "", "sections": []}
+    aliases = extract._extract_abbreviations(paper)
+    assert aliases["4-HNE"] == "4-hydroxy-2-nonenal"
+    assert extract._entity_mentioned("4-hydroxy-2-nonenal", "4-HNE activated ERK1/2", aliases)
+
+
+def test_absence_feature_is_affirmed_phenotype_not_relation_negation():
+    evidence = "Cicatricial alopecias are characterized by a lack of follicular ostia and irreversible alopecia."
+    assert not extract._has_negation(
+        evidence, "HAS_PHENOTYPE", "Cicatricial alopecias", "lack of follicular ostia"
+    )[0]
+    assert not extract._has_negation(
+        evidence, "HAS_PHENOTYPE", "Cicatricial alopecias", "irreversible alopecia"
+    )[0]
+
+
+def test_neutral_fragment_requires_complete_predicate():
+    assert extract._neutral_evidence_is_fragment("PI3K with wortmannin")
+    assert extract._neutral_evidence_is_fragment("employment status among persons with bipolar disorder")
+    assert not extract._neutral_evidence_is_fragment("HSVdwi was detected in patients with recent CVT")
 
 
 def test_duplicate_evidence_prefers_stronger_complete_quote():
