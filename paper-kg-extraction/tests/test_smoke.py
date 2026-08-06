@@ -59,7 +59,7 @@ def test_end_to_end_mock():
     schema = Schema()
     llm = LLMClient(mock=True)
     edges = extract_paper(SAMPLE, schema, llm, new_run_id(), {})
-    assert len(edges) >= 2
+    assert len(edges) >= 1
     for e in edges:
         # ID 自洽
         assert e["head_id"] == node_id(e["head"], e["head_type"])

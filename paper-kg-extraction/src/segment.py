@@ -45,6 +45,11 @@ def clean_text(t: str) -> str:
     return t.strip()
 
 
+def normalize_unit_text(t: str) -> str:
+    """Canonical text shown to the LLM and used for evidence span checks."""
+    return re.sub(r"\s+", " ", clean_text(t)).strip()
+
+
 def section_type(title: str) -> str:
     low = (title or "").strip().lower()
     for stype, pat in _SECTION_TYPES:
@@ -105,7 +110,7 @@ def segment_paper(paper: dict) -> list[dict]:
             continue
         paras = _split_paragraphs(text)
         for unit_text, para_idxs in _pack(paras):
-            unit_text = clean_text(unit_text)
+            unit_text = normalize_unit_text(unit_text)
             if not unit_text:
                 continue
             uid = f"{source_id}#sec{section_index}#u{ordinal:02d}"

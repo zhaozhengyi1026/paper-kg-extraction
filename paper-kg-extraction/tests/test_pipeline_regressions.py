@@ -325,7 +325,8 @@ def test_mock_keeps_same_edge_from_two_papers(tmp_path):
     ], check=True, cwd=ROOT, capture_output=True, text=True,
        encoding="utf-8", errors="replace")
     rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
-    assert len(rows) == 4
+    # Pathway inhibition is no longer promoted to a direct component target.
+    assert len(rows) == 2
     assert {row["provenance"]["source_id"] for row in rows} == {"pmc:PMC1", "pmc:PMC2"}
     report = json.loads((tmp_path / "extraction_report.json").read_text(encoding="utf-8"))
     assert report["workers"] == 2

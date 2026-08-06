@@ -383,7 +383,7 @@ def extract_paper(paper: dict, schema, llm, run_id: str,
     nunits = len(units)
     print(f"    分 {nunits} 个语义单元", file=sys.stderr, flush=True)
     for ui, unit in enumerate(units, 1):
-        system, user = build_prompt(schema, unit)
+        system, user = build_prompt(schema, unit, entity_type_memory=paper_type_map)
         print(f"    [{ui}/{nunits}] LLM 调用中…", file=sys.stderr, flush=True)
         try:
             resp = llm.complete_json(system, user)
@@ -795,6 +795,12 @@ def _make_edge(tr, unit, schema, run_id, method, tier, conf,
             _reject("causal_semantics_mismatch", phenotype_reason)
             return None
 
+    if rel == "MOLECULARLY_TARGETS" and _pathway_only_target_claim(tail, evidence_text):
+        _bump(stats, "pathway_only_target_claim")
+        _reject("pathway_only_target_claim",
+                "pathway modulation does not establish a target relation to the named component")
+        return None
+
     # ── 3.5) NLI 语义校验 ──
     if nli_llm is not None and nli_cache is not None and needs_nli(rel):
         nli_label, nli_hyp = _run_nli_check(
@@ -855,14 +861,27 @@ def _make_edge(tr, unit, schema, run_id, method, tier, conf,
     # ── 4) 否定检测 ──
     neg, neg_detail = _has_negation(evidence_text, rel, head, tail)
     if neg:
-        _bump(stats, "negation_warning")
-        print("      ⚠ negation: " + neg_detail[:100], file=sys.stderr, flush=True)
-        _warn("negation_warning", neg_detail)
+        _bump(stats, "negated_relation")
+        print("      REJ negation: " + neg_detail[:100], file=sys.stderr, flush=True)
+        _reject("negated_relation", neg_detail)
+        return None
 
     # ── 4.5) 结构关系置信度加权 ──
     boost = _RELATION_CONFIDENCE_BOOST.get(rel, 0.0)
     if boost:
         conf = round(min(conf + boost, 0.98), 3)
+
+    raw_qualifiers = tr.get("qualifiers", {}) or {}
+    allowed_qualifiers = set(
+        schema.relation_types.get(rel, {}).get("qualifiers", []) or [])
+    qualifiers = {
+        key: value for key, value in raw_qualifiers.items()
+        if key in allowed_qualifiers and value not in (None, "", "unknown")
+    }
+    removed_qualifiers = set(raw_qualifiers) - set(qualifiers)
+    if removed_qualifiers:
+        stats["qualifiers_removed"] = stats.get("qualifiers_removed", 0) + len(
+            removed_qualifiers)
 
     # ── 组装 ──
     _paper_abbrs = paper.get("_abbreviations", {})
@@ -896,7 +915,7 @@ def _make_edge(tr, unit, schema, run_id, method, tier, conf,
         "edge_id": eid, "head_id": hid, "tail_id": tid,
         "head": head, "head_type": ht, "tail": tail, "tail_type": tt,
         "_head_canon": _canon_head, "_tail_canon": _canon_tail,
-        "relation": rel, "qualifiers": tr.get("qualifiers", {}) or {},
+        "relation": rel, "qualifiers": qualifiers,
         "evidence_sentence": ver.get("evidence_sentence", ""),
         "evidence_chunk_id": unit.get("unit_id", ""),
         "evidence_source_id": unit.get("source_id", ""),
@@ -967,6 +986,25 @@ def _repair_relation_types(head: str, head_type: str, relation: str,
                       r"disturbance|pain|fatigue|fever|loss|impairment|thrombocytopenia)\b", low):
             tail_type = "PhenotypicFeature"
     return head_type, tail_type
+
+
+def _pathway_only_target_claim(tail: str, evidence: str) -> bool:
+    """Detect pathway modulation wrongly promoted to a component target claim."""
+    if not tail or not evidence or not _re.search(r"\b(pathway|signaling)\b", evidence,
+                                                  _re.IGNORECASE):
+        return False
+    tail_pat = _re.escape(tail)
+    pathway_claim = _re.search(
+        rf"\b(?:inhibit|suppress|modulat|activat|regulat)\w*\b.{{0,100}}"
+        rf"{tail_pat}.{{0,80}}\b(?:pathway|signaling)\b",
+        evidence, _re.IGNORECASE,
+    )
+    direct_claim = _re.search(
+        rf"\b(?:bind|target)\w*\b.{{0,60}}{tail_pat}|"
+        rf"{tail_pat}.{{0,60}}\b(?:direct\s+target|target\s+of)\b",
+        evidence, _re.IGNORECASE,
+    )
+    return bool(pathway_claim and not direct_claim)
 
 
 def _bump(stats: dict, key: str) -> None:

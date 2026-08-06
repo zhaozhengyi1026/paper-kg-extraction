@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""抽取 prompt v3.0 —— 关系菜单由 schema 动态生成，与本体永远同步。
+"""抽取 prompt v3.1 —— 实体、关系和 qualifier 菜单由当前 schema 动态生成。
 
 v3.0 改进 (基于 0714/0722 质量审计):
   - 新增铁律 6-8: 实体名原文逐字、TREATS 研究目的≠疗效、COMPLEMENTS 联用≠比较
@@ -132,6 +132,9 @@ SYSTEM += """
     "antibody against", "inhibitor of", direct binding) from indirect evidence
     (expression, abundance, cleavage, pathway co-occurrence) and computational
     predictions. Never present predicted or indirect evidence as direct binding.
+    "X inhibits the A/B signaling pathway" does not establish that X directly
+    targets A or B; omit MOLECULARLY_TARGETS unless the evidence separately states
+    binding, targeting or direct experimental regulation of that entity.
 12. The head and tail strings must occur literally in evidence_sentence. If the
     sentence uses an acronym, hyphenated form, or local surface form, output that
     exact form (for example 4-HNE, TZD, hSPC25, RACK-1). Do not replace it with a
@@ -152,11 +155,34 @@ SYSTEM += """
     `Gene`; symptoms, signs, impairments and measured manifestations are
     `PhenotypicFeature`; assays are `LabTest`; interventions/procedures are
     `Procedure`; chemicals and metabolites are `MolecularEntity`.
+17. Do not turn negated, ineffective or non-significant findings into positive
+    relations. Omit claims such as "did not improve", "was not associated with",
+    "no interaction was observed" and "showed no significant effect" unless the
+    schema explicitly provides a polarity/negated representation.
+18. Interaction relations are mutually constrained:
+    - HDI requires evidence that the herb changes drug exposure, pharmacokinetics,
+      pharmacodynamics, toxicity or effect strength.
+    - COMPLEMENTS_WM_THERAPY requires adjunct/combined treatment with an explicit
+      benefit, but no herb-drug interaction conclusion.
+    - REGIMEN_INCLUDES only states regimen composition and does not imply benefit
+      or interaction. Do not emit multiple relations for the same wording unless
+      each relation has its own explicit predicate.
+19. A phrase such as "protective effect of X" is not a result when embedded in
+    an aim, title, hypothesis or investigated-object construction. Require an
+    observed result predicate in the evidence.
+20. qualifiers may contain only keys listed for that relation in the dynamic
+    relation menu. Include a qualifier only when its value is explicitly supported
+    by the quoted evidence; do not guess severity, frequency, bias risk, mechanism,
+    clinical consequence or other values, and do not fill unsupported fields with
+    `unknown`.
+21. Emit STUDIES or SUPPORTED_BY_LITERATURE only when the required article entity
+    surface form occurs literally in the current evidence. Do not invent a paper
+    title or identifier from unavailable metadata.
 """
 
 _ENTITY_HINT = """实体类型表（选 head_type/tail_type 用）：
 中医：Herb(中药) HerbProcessed(饮片) Formula(方剂) PatentMedicine(中成药) Disease(中医病)
-      Syndrome(证候) TreatmentPrinciple(治法) NatureElement/LocationElement(证素,闭类)
+      Syndrome(证候) TreatmentPrinciple(治法) NatureElement(性质证素,闭类) LocationElement(部位证素,闭类)
 西医：DiseaseWM(西医病,ICD) DrugWestern(西药,ATC) Gene(基因/靶点) MolecularEntity(化学成分/分子)
       Pathway(通路) BiologicalProcess(GO过程) PhenotypicFeature(表型/HPO) AnatomicalEntity(解剖)
       LabTest(检验/生标) Procedure(操作) Exposure(暴露)
@@ -180,89 +206,97 @@ _ENTITY_HINT = """实体类型表（选 head_type/tail_type 用）：
 
 def _relation_menu(schema) -> str:
     lines = []
-    for rel in PRIORITY_RELATIONS:
+    ordered = [rel for rel in PRIORITY_RELATIONS if rel in schema.relation_types]
+    ordered.extend(rel for rel in schema.relation_types if rel not in ordered)
+    for rel in ordered:
         spec = schema.relation_types.get(rel)
         if not spec:
             continue
         dom = "/".join(spec.get("domain", []) or ["*"])
         rng = "/".join(spec.get("range", []) or ["*"])
-        desc = (spec.get("desc", "") or "").split("（")[0].split("(")[0][:28]
-        lines.append(f"- {rel}: {dom} -> {rng}  . {desc}")
-    return "关系菜单（relation: domain -> range）：\n" + "\n".join(lines)
+        desc = (spec.get("desc", "") or "").replace("\n", " ")[:80]
+        qualifiers = ", ".join(spec.get("qualifiers", []) or []) or "none"
+        lines.append(f"- {rel}: {dom} -> {rng}; qualifiers=[{qualifiers}]; {desc}")
+    return "关系菜单（relation: domain -> range；qualifiers 只能取该行白名单）：\n" + "\n".join(lines)
 
 
-_FEWSHOT = """示例 1——成分-靶点机制链：
+def _entity_menu(schema) -> str:
+    lines = []
+    for name, spec in schema.entity_types.items():
+        desc = (spec.get("desc", "") or "").replace("\n", " ")[:80]
+        enum_values = spec.get("enum", []) or []
+        enum_text = f"; enum={enum_values}" if enum_values else ""
+        lines.append(f"- {name}{enum_text}; {desc}")
+    return "当前 schema 实体类型（只能逐项选择，不能用斜杠组合）：\n" + "\n".join(lines)
+
+
+_FEWSHOT = """示例 1——成分关系；通路抑制不升级为直接靶点：
 <UNIT>
-Astragaloside IV, the major active constituent of Astragalus membranaceus, ameliorated
-renal fibrosis in diabetic nephropathy by inhibiting the TGF-beta1/Smad3 signaling pathway.
+Astragaloside IV, the major active constituent of Astragalus membranaceus, ameliorated renal fibrosis in diabetic nephropathy by inhibiting the TGF-beta1/Smad3 signaling pathway.
 </UNIT>
-输出：
+正确输出：
 {"triples":[
  {"head":"Astragalus membranaceus","head_type":"Herb","relation":"HERB_CONTAINS_INGREDIENT",
   "tail":"Astragaloside IV","tail_type":"MolecularEntity",
-  "evidence_sentence":"Astragaloside IV, the major active constituent of Astragalus membranaceus","qualifiers":{}},
- {"head":"Astragaloside IV","head_type":"MolecularEntity","relation":"MOLECULARLY_TARGETS",
-  "tail":"TGF-beta1","tail_type":"Gene",
-  "evidence_sentence":"inhibiting the TGF-beta1/Smad3 signaling pathway","qualifiers":{"action":"inhibitor"}}
+  "evidence_sentence":"Astragaloside IV, the major active constituent of Astragalus membranaceus","qualifiers":{}}
 ]}
 
-示例 2——中药-西药联用（HDI，正确：联用增效）：
+示例 2——有确定实验结果的中药-西药相互作用：
 <UNIT>
-Co-administration of Astragalus membranaceus extract with metformin significantly
-enhanced the hypoglycemic effect in diabetic rats. The area under the curve (AUC)
-of metformin increased by 45% when combined with the herbal extract, suggesting
-a potential herb-drug pharmacokinetic interaction via CYP3A4 inhibition.
+Co-administration of Astragalus membranaceus extract with metformin significantly enhanced the hypoglycemic effect in diabetic rats. The area under the curve (AUC) of metformin increased by 45% when combined with the herbal extract, suggesting a potential herb-drug pharmacokinetic interaction via CYP3A4 inhibition.
 </UNIT>
-输出：
+正确输出：
 {"triples":[
- {"head":"Astragalus membranaceus","head_type":"Herb","relation":"HDI",
+ {"head":"Astragalus membranaceus extract","head_type":"HerbProcessed","relation":"HDI",
   "tail":"metformin","tail_type":"DrugWestern",
   "evidence_sentence":"Co-administration of Astragalus membranaceus extract with metformin significantly enhanced the hypoglycemic effect",
-  "qualifiers":{"severity":"moderate","interaction_type":"synergistic",
-   "effect_description":"enhanced hypoglycemic effect, metformin AUC increased 45%",
-   "evidence_grade":"in_vivo","mechanism":"CYP3A4 inhibition"}}
+  "qualifiers":{"interaction_type":"synergistic","effect_description":"enhanced hypoglycemic effect","evidence_grade":"in_vivo"}}
 ]}
 
-示例 3——**不应抽取**的反例：研究目的不是疗效：
+示例 3——研究目的不是疗效：
 <UNIT>
 To find out the mechanism of Tangfukang on the diabetic nephropathy (DN).
 </UNIT>
-输出：
+正确输出：
 {"triples": []}
-说明：原文只是"研究 X 对 Y 的机制"，未确认疗效 -> 不应抽 TREATS。
 
-示例 4——**不应抽取**的反例：比较不是联用：
+示例 4——比较不是联用：
 <UNIT>
-Both Tangfukang and aminoguanidine significantly decreased the expression of AGEs,
-but Tangfukang was greatly superior to aminoguanidine in suppressing the expression
-of cytokine like ICAM-1, IL-1 beta, TNF-alpha.
+Both Tangfukang and aminoguanidine significantly decreased the expression of AGEs, but Tangfukang was greatly superior to aminoguanidine in suppressing the expression of cytokine like ICAM-1, IL-1 beta, TNF-alpha.
 </UNIT>
-输出：
+正确输出：
 {"triples": []}
-说明：原文是比较两种药各自独立给药的效果（X was superior to Y），两者并未联用 -> 不应抽 HDI 或 COMPLEMENTS_WM_THERAPY。
 
-示例 5——**不应抽取**的反例：括号内是拉丁学名注释，不是成分：
+示例 5——括号内拉丁学名是同义词，不是成分：
 <UNIT>
-Huangqi (Astragalus membranaceus) and Dang Gui (Angelica sinensis) are two
-of the most widely used herbs in traditional Chinese medicine.
+Huangqi (Astragalus membranaceus) and Dang Gui (Angelica sinensis) are two of the most widely used herbs in traditional Chinese medicine.
 </UNIT>
-输出：
-{"triples": []}
-说明："Huangqi (Astragalus membranaceus)" 是中文名+拉丁学名注释，括号内是**同义词**，不是成分。
-不要据此抽 HERB_CONTAINS_INGREDIENT。正确做法：如有疗效陈述，可抽 Huangqi -TREATS-> Disease。"""
+正确输出：
+{"triples": []}"""
 
 
-def build_prompt(schema, unit: dict) -> tuple[str, str]:
+def build_prompt(schema, unit: dict,
+                 entity_type_memory: dict[str, str] | None = None) -> tuple[str, str]:
     """返回 (system, user)。user 内嵌 <UNIT>...</UNIT>，供 mock 与真实模型统一解析。"""
     ctx = f"论文章节：{' > '.join(unit.get('chapter_path', []))}（section_type={unit.get('section_type')}）"
+    memory = entity_type_memory or {}
+    memory_text = "\n".join(
+        f"- {name} => {typ}" for name, typ in sorted(memory.items())
+    ) or "(none yet; post-processing will enforce consistency)"
     user = f"""{_ENTITY_HINT}
 
+{_entity_menu(schema)}
+
 {_relation_menu(schema)}
+
+<ENTITY_TYPE_MEMORY>
+{memory_text}
+</ENTITY_TYPE_MEMORY>
 
 {_FEWSHOT}
 
 现在抽取下面这个单元。{ctx}
-提示：introduction/background 多为背景引述，抽取从严；results/conclusion/abstract 的结论性陈述可抽。
+提示：全文明确陈述且非推测的医学事实均可抽；研究目的、假设和无显著结果不抽。
 <UNIT>
 {unit['text']}
 </UNIT>

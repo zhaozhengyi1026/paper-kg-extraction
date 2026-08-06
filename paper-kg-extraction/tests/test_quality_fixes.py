@@ -9,7 +9,10 @@ sys.path.insert(0, str(ROOT / "src"))
 
 import extract  # noqa: E402
 import nli  # noqa: E402
+import prompts  # noqa: E402
 from provenance import expand_evidence_context, verify_evidence  # noqa: E402
+from schema_loader import Schema  # noqa: E402
+from segment import segment_paper  # noqa: E402
 
 
 def test_nli_association_does_not_require_causation():
@@ -195,3 +198,31 @@ def test_duplicate_evidence_prefers_stronger_complete_quote():
     strong = {"confidence": 0.7, "evidence_sentence": "The compound directly binds to TP53.",
               "qualifiers": {"evidence_grade": "in_vitro"}}
     assert extract._edge_evidence_score(strong) > extract._edge_evidence_score(weak)
+
+
+def test_pathway_modulation_is_not_component_target():
+    evidence = ("Astragaloside IV ameliorated fibrosis by inhibiting the "
+                "TGF-beta1/Smad3 signaling pathway.")
+    assert extract._pathway_only_target_claim("TGF-beta1", evidence)
+    assert not extract._pathway_only_target_claim(
+        "TGF-beta1", "Astragaloside IV directly binds TGF-beta1.")
+
+
+def test_prompt_fewshots_follow_evidence_and_type_rules():
+    assert '"head":"Astragalus membranaceus extract","head_type":"HerbProcessed"' \
+        in prompts._FEWSHOT
+    assert '"severity":"moderate"' not in prompts._FEWSHOT
+    assert '"relation":"MOLECULARLY_TARGETS"' not in prompts._FEWSHOT
+    assert "说明：" not in prompts._FEWSHOT
+    menu = prompts._relation_menu(Schema())
+    assert "MOLECULARLY_TARGETS" in menu
+    assert "qualifiers=[action, affinity]" in menu
+
+
+def test_segment_normalizes_prompt_and_provenance_whitespace_once():
+    units = segment_paper({
+        "source_id": "pmc:test",
+        "sections": [{"title": "Results", "text": "Alpha binds\n\n  beta protein."}],
+    })
+    assert units[0]["text"] == "Alpha binds beta protein."
+    assert verify_evidence(units[0]["text"], "Alpha binds beta protein.")["ok"]
