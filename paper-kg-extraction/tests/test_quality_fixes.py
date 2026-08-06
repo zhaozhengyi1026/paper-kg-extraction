@@ -9,13 +9,39 @@ sys.path.insert(0, str(ROOT / "src"))
 
 import extract  # noqa: E402
 import nli  # noqa: E402
-from provenance import verify_evidence  # noqa: E402
+from provenance import expand_evidence_context, verify_evidence  # noqa: E402
 
 
 def test_nli_association_does_not_require_causation():
     hypothesis = nli.build_hypothesis("Tie-2", "GENE_ASSOCIATED_WITH_DISEASE", "DN")
     assert "不要求因果" in hypothesis
     assert "因果关联" not in hypothesis
+
+
+def test_provenance_recovers_typographic_quote_variant():
+    source = "Huntington’s disease causes progressive motor dysfunction."
+    result = verify_evidence(source, "Huntington's disease causes progressive motor dysfunction.")
+    assert result["ok"]
+    assert result["evidence_sentence"] == source
+
+
+def test_evidence_context_can_add_adjacent_entity_sentence():
+    source = "Melphalan was administered. The patient developed myelosuppression."
+    start = source.index("The patient")
+    windows = expand_evidence_context(source, start, len(source))
+    assert any("Melphalan" in item["evidence_sentence"] and
+               "myelosuppression" in item["evidence_sentence"] for item in windows)
+
+
+def test_relation_type_repair_is_conservative():
+    assert extract._repair_relation_types(
+        "AMT-130", "DrugWestern", "MOLECULARLY_TARGETS", "HTT",
+        "MolecularEntity", "AMT-130 targets the HTT gene",
+    )[1] == "Gene"
+    assert extract._repair_relation_types(
+        "drug", "DrugWestern", "MOLECULARLY_TARGETS", "lipid",
+        "MolecularEntity", "the drug contains this lipid",
+    )[1] == "MolecularEntity"
 
 
 def test_nli_skip_is_relation_specific():

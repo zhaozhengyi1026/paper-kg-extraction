@@ -36,7 +36,60 @@ def find_span(unit_text: str, evidence: str) -> tuple[int, int] | None:
     m = pat.search(unit_text)
     if m:
         return (m.start(), m.end())
+    # Models frequently normalize typographic quotes/dashes. Match those
+    # variants while returning the exact original source span.
+    pieces = []
+    for ch in ev:
+        if ch.isspace():
+            pieces.append(r"\s+")
+        elif ch in "'’‘`":
+            pieces.append(r"['’‘`]")
+        elif ch in '“”\"':
+            pieces.append(r'[“”\"]')
+        elif ch in "‐‑‒–—−-":
+            pieces.append(r"[‐‑‒–—−-]")
+        else:
+            pieces.append(re.escape(ch))
+    try:
+        flexible = re.search("".join(pieces), unit_text, re.IGNORECASE)
+    except re.error:
+        flexible = None
+    if flexible:
+        return flexible.start(), flexible.end()
     return None
+
+
+def expand_evidence_context(unit_text: str, char_start: int, char_end: int,
+                            max_chars: int = MAX_EVIDENCE_CHARS) -> list[dict]:
+    """Return exact-source sentence windows around an existing evidence span.
+
+    Candidates grow from the containing sentence to one adjacent sentence on
+    either side. Callers can select the shortest window containing both
+    entities; offsets always refer to ``unit_text``.
+    """
+    if not (0 <= char_start < char_end <= len(unit_text)):
+        return []
+    boundaries = [0]
+    boundaries.extend(m.end() for m in re.finditer(r"[.!?。！？]\s+", unit_text))
+    boundaries.append(len(unit_text))
+    boundaries = sorted(set(boundaries))
+    left_index = max(i for i, pos in enumerate(boundaries) if pos <= char_start)
+    right_index = min(i for i, pos in enumerate(boundaries) if pos >= char_end)
+    windows = []
+    for grow_left, grow_right in ((0, 0), (1, 0), (0, 1), (1, 1)):
+        li = max(0, left_index - grow_left)
+        ri = min(len(boundaries) - 1, right_index + grow_right)
+        start, end = boundaries[li], boundaries[ri]
+        while start < end and unit_text[start].isspace():
+            start += 1
+        while end > start and unit_text[end - 1].isspace():
+            end -= 1
+        if MIN_EVIDENCE_CHARS <= end - start <= max_chars:
+            candidate = {"char_start": start, "char_end": end,
+                         "evidence_sentence": unit_text[start:end]}
+            if candidate not in windows:
+                windows.append(candidate)
+    return sorted(windows, key=lambda item: item["char_end"] - item["char_start"])
 
 
 def verify_evidence(unit_text: str, evidence_sentence: str,

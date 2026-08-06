@@ -69,6 +69,20 @@ python src/quality_audit.py \
   --out-dir out/runs/RUN/audit_merged
 ```
 
+每轮 SenseNova/DeepSeek 同批 A/B 完成后，将对比追加到
+`docs/AB_TEST_RESULTS.md`：
+
+```bash
+python tools/update_ab_test_report.py \
+  --sensenova-run out/runs/SENSENOVA_RUN \
+  --deepseek-run out/runs/DEEPSEEK_RUN \
+  --label "2026-08-06 PMC 全文 200 篇 v2" \
+  --improvements "填写本轮发现及下一步改进"
+```
+
+抽取报告中的 `paper_evidence_coverage` 同时记录论文覆盖率和零产出原因，
+区分模型无候选、候选全部被拒绝和 LLM 最终失败。
+
 DeepSeek fallback 使用官方接口：
 
 ```dotenv

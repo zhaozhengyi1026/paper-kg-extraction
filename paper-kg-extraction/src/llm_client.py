@@ -125,7 +125,8 @@ class LLMClient:
             raise RuntimeError("需要 openai 包：pip install openai>=1.0") from e
         self._client = OpenAI(base_url=self.base_url, api_key=self.api_key)
 
-    def complete_json(self, system: str, user: str, retries: int = 5) -> dict:
+    def complete_json(self, system: str, user: str, retries: int = 5,
+                      expected_key: str = "triples") -> dict:
         """调 chat.completions，返回 JSON 对象。
 
         失败自动重试：指数退避 + 随机抖动，最多 retries 次。
@@ -175,8 +176,12 @@ class LLMClient:
                               file=sys.stderr, flush=True)
                         time.sleep(1.0)
                         continue
+                    if expected_key != "triples":
+                        raise ValueError(f"LLM 返回空对象，缺少 {expected_key}")
                     print("      ℹ LLM 再次返回空对象 {}，按无三元组接受",
                           file=sys.stderr, flush=True)
+                if expected_key and expected_key not in result:
+                    raise ValueError(f"LLM JSON 缺少必需字段 {expected_key}")
                 result["_model_used"] = self.model
                 usage = getattr(resp, "usage", None)
                 with self._metrics_lock:
@@ -233,13 +238,15 @@ class FallbackLLMClient:
         self._failure_threshold = int(os.environ.get("LLM_CIRCUIT_FAILURES", "3"))
         self._cooldown = float(os.environ.get("LLM_CIRCUIT_COOLDOWN", "300"))
 
-    def complete_json(self, system: str, user: str, retries: int = 5) -> dict:
+    def complete_json(self, system: str, user: str, retries: int = 5,
+                      expected_key: str = "triples") -> dict:
         with self._lock:
             circuit_open = time.monotonic() < self._circuit_open_until
         primary_error_text = ""
         if not circuit_open:
             try:
-                result = self.primary.complete_json(system, user, retries=retries)
+                result = self.primary.complete_json(
+                    system, user, retries=retries, expected_key=expected_key)
                 with self._lock:
                     self.usage_counts[self.primary.model] += 1
                     self._consecutive_primary_failures = 0
@@ -262,7 +269,8 @@ class FallbackLLMClient:
             file=sys.stderr,
             flush=True,
         )
-        result = self.fallback.complete_json(system, user, retries=retries)
+        result = self.fallback.complete_json(
+            system, user, retries=retries, expected_key=expected_key)
         with self._lock:
             self.usage_counts[self.fallback.model] += 1
         return result

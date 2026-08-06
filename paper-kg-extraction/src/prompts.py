@@ -48,9 +48,8 @@ SYSTEM = """你是医学知识图谱抽取器，服务于"中西医结合循证�
 6. **实体名必须是原文中逐字出现的字符串。** 不得做以下转换：
    - 缩写展开: 原文写 "AI treatment" -> 实体名应为 "AI"，不能写 "Astragalus injection"
    - 指代还原: 原文写 "the above criteria" -> 不能改写为 "early stage diabetic nephropathy"
-   - 如果原文同时有全称和缩写（如 "diabetic nephropathy (DN)"），优先使用全称，全文前后一致
-   - 如果同一个实体在全文中多次出现但名字略有不同（如 "DN" / "diabetic nephropathy"），
-     选择实体首次出现时的完整形式，全文统一使用
+   - 如果证据句同时有全称和缩写（如 "diabetic nephropathy (DN)"），优先使用全称
+   - 如果当前证据句只出现缩写或局部形式，必须使用该句里的原文形式；后处理会统一节点
 7. **TREATS / WM_TREATS 仅当原文明确陈述疗效时抽取。**
    研究目的/机制探索不代表疗效确认。以下句式**不应**抽 TREATS：
    - "To study/find out/investigate the mechanism/effect of X on Y" -- 这是研究目的
@@ -135,6 +134,10 @@ SYSTEM += """
     sentence uses an acronym, hyphenated form, or local surface form, output that
     exact form (for example 4-HNE, TZD, hSPC25, RACK-1). Do not replace it with a
     full name found elsewhere in the paper; canonicalization is handled after extraction.
+13. Do not return an empty list merely because the unit is not about treatment.
+    Also inspect explicit phenotype, diagnosis, measurement, adverse-effect,
+    comorbidity, localization, gene-disease, pathway and study-subject facts.
+    Return {"triples": []} only when no sentence supports any schema relation.
 """
 
 _ENTITY_HINT = """实体类型表（选 head_type/tail_type 用）：

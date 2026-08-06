@@ -232,7 +232,8 @@ def batch_check(
         model_label = _model_name(current_llm)
         for attempt in range(retries):
             try:
-                resp = current_llm.complete_json(system, user)
+                resp = current_llm.complete_json(
+                    system, user, retries=1, expected_key="results")
                 if isinstance(resp, dict) and "results" in resp:
                     results = resp["results"]
                     if isinstance(results, list) and len(results) == len(hypotheses):

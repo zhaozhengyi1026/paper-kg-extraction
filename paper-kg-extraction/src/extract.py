@@ -17,7 +17,7 @@ import logging
 
 from ids import edge_id, node_id
 from prompts import build_prompt
-from provenance import verify_evidence
+from provenance import expand_evidence_context, verify_evidence
 from segment import segment_paper
 from llm_client import create_nli_client
 from nli import (
@@ -188,13 +188,14 @@ def _mechanism_evidence_grade(evidence: str) -> str:
     if _re.search(r"network pharmacology|molecular docking|predicted|prediction|screened|"
                   r"potential targets?|target network|enrichment analysis", low):
         return "predicted"
-    if _re.search(r"\b(direct(?:ly)?\s+(bind|target|interact)|bind(?:s|ing)?\s+to|"
+    if _re.search(r"\b(direct(?:ly)?\s+(bind|target|interact)|bind(?:s|ing)?(?:\s+to)?|"
                   r"binding affinity|pull[- ]down|surface plasmon resonance|"
+                  r"recogniz(?:e|es|ed|ing)|specific\s+for|"
                   r"(?:is|was|are|were)\s+(?:a\s+|an\s+)?(?:direct\s+|downstream\s+|specific\s+)?target\s+of|"
                   r"\btarget(?:s|ed|ing)?\b|"
                   r"antibod(?:y|ies)\s+(?:against|to)|(?:selective\s+)?inhibitor\s+of)\b", low):
         return "direct"
-    if _re.search(r"\b(inhibit|suppress|down[- ]?regulat|up[- ]?regulat|activat|"
+    if _re.search(r"\b(inhibit|suppress|block|modulat|down[- ]?regulat|up[- ]?regulat|activat|"
                   r"knockdown|silenc|phosphorylat)\w*\b", low):
         return "regulatory"
     if _re.search(r"\b(expression|expressed|cleavage|co[- ]?express|abundance|level)\w*\b", low):
@@ -358,6 +359,7 @@ def extract_paper(paper: dict, schema, llm, run_id: str,
     paper["_abbreviations"] = _extract_abbreviations(paper)
 
     units = segment_paper(paper)
+    stats["units_total"] = len(units)
     method = "mock" if getattr(llm, "mock", False) else "teacher_llm"
     tier = _tier_from_level(paper.get("evidence_level", ""))
     conf = round(_BASE.get("teacher_llm", 0.7) * _TIER_FACTOR.get(tier, 0.85), 3)
@@ -372,7 +374,9 @@ def extract_paper(paper: dict, schema, llm, run_id: str,
         nli_fallback_llm = None
     else:
         nli_llm = create_nli_client(fallback_llm=llm)
-        nli_fallback_llm = getattr(llm, "fallback", llm)
+        # create_nli_client already owns the SenseNova -> DeepSeek chain.
+        # Passing DeepSeek again to batch_check would duplicate fallback calls.
+        nli_fallback_llm = None
     nli_cache: dict = {}           # (premise_hash, hyp) → label
     paper_type_map: dict = {}      # entity_name → type（同论文内统一类型）
 
@@ -422,6 +426,8 @@ def extract_paper(paper: dict, schema, llm, run_id: str,
         if not isinstance(triples_list, list):
             triples_list = []
         n_triples = len(triples_list)
+        _bump(stats, "units_with_candidates" if n_triples else "units_without_candidates")
+        stats["candidate_triples"] = stats.get("candidate_triples", 0) + n_triples
         print(f"    [{ui}/{nunits}] LLM ✓ 返回 {n_triples} 条三元组",
               file=sys.stderr, flush=True)
         for tr in triples_list:
@@ -666,6 +672,8 @@ def _make_edge(tr, unit, schema, run_id, method, tier, conf,
     _abbrs = paper.get("_abbreviations", {})
     ht = _normalize_type(head, ht, _abbrs, paper_type_map)
     tt = _normalize_type(tail, tt, _abbrs, paper_type_map)
+    ht, tt = _repair_relation_types(head, ht, rel, tail, tt,
+                                    tr.get("evidence_sentence", ""))
 
     def _reject(reason: str, detail: str):
         reject_log.append({
@@ -748,6 +756,17 @@ def _make_edge(tr, unit, schema, run_id, method, tier, conf,
     # ── 3) 实体-证据句匹配 ──
     head_ok = _entity_mentioned(head, evidence_text, _abbrs)
     tail_ok = _entity_mentioned(tail, evidence_text, _abbrs)
+    if not (head_ok and tail_ok) and isinstance(cs, int) and isinstance(ce, int):
+        for expanded in expand_evidence_context(unit_text, cs, ce):
+            candidate = expanded["evidence_sentence"]
+            if (_entity_mentioned(head, candidate, _abbrs) and
+                    _entity_mentioned(tail, candidate, _abbrs)):
+                evidence_text = candidate
+                ver.update(expanded)
+                cs, ce = expanded["char_start"], expanded["char_end"]
+                head_ok = tail_ok = True
+                _bump(stats, "evidence_context_recovered")
+                break
     if not head_ok or not tail_ok:
         missing = []
         if not head_ok:
@@ -929,6 +948,25 @@ def _normalize_type(name: str, entity_type: str,
         paper_type_map[name] = entity_type
 
     return entity_type
+
+
+def _repair_relation_types(head: str, head_type: str, relation: str,
+                           tail: str, tail_type: str, evidence: str) -> tuple[str, str]:
+    """Repair high-confidence model type slips without changing the schema."""
+    low = (evidence or "").lower()
+    if relation in {"MOLECULARLY_TARGETS", "GENE_ASSOCIATED_WITH_DISEASE"}:
+        gene_name = bool(_re.fullmatch(r"[A-Za-z][A-Za-z0-9./+_-]{1,20}", tail or ""))
+        gene_context = bool(_re.search(
+            r"\b(gene|protein|receptor|kinase|factor|enzyme|expression|bind|target|inhibit|regulat)",
+            low,
+        ))
+        if tail_type == "MolecularEntity" and gene_name and gene_context:
+            tail_type = "Gene"
+    if relation == "HAS_PHENOTYPE" and tail_type in {"Disease", "DiseaseWM"}:
+        if _re.search(r"\b(symptom|sign|feature|phenotype|level|dysfunction|decline|"
+                      r"disturbance|pain|fatigue|fever|loss|impairment|thrombocytopenia)\b", low):
+            tail_type = "PhenotypicFeature"
+    return head_type, tail_type
 
 
 def _bump(stats: dict, key: str) -> None:

@@ -200,6 +200,18 @@ def extract_one_paper(paper: dict, schema, llm, run_id: str):
     return paper, edges, rejects, warnings, paper_stats, had_llm_error, time.monotonic() - started
 
 
+def zero_output_reason(paper_stats: dict, had_llm_error: bool) -> str:
+    if had_llm_error:
+        return "llm_error"
+    candidates = int(paper_stats.get("candidate_triples", 0) or 0)
+    accepted = int(paper_stats.get("accepted", 0) or 0)
+    if candidates == 0:
+        return "model_returned_no_candidates"
+    if accepted == 0:
+        return "all_candidates_rejected"
+    return "all_candidates_deduplicated"
+
+
 def _sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -362,6 +374,8 @@ def main():
     else:
         pbar = None
 
+    zero_output_reasons = Counter()
+    papers_with_edges = 0
     with out_path.open(open_mode, encoding="utf-8") as fout:
         pi = 0
         workers = max(1, min(args.workers, 8))
@@ -445,6 +459,12 @@ def main():
                 fout.write(json.dumps(e, ensure_ascii=False).replace(chr(10), " ") + "\n")
                 accepted_by_model[e.get("extraction_model", "unknown")] += 1
             n_edges += len(edges)
+            if edges:
+                papers_with_edges += 1
+                zero_reason = ""
+            else:
+                zero_reason = zero_output_reason(paper_stats, paper_had_llm_error)
+                zero_output_reasons[zero_reason] += 1
             # Commit checkpoint only after durable edge output.
             fout.flush()
             if hasattr(os, "fsync"):
@@ -454,6 +474,11 @@ def main():
                     checkpoint.write(json.dumps({
                         "source_id": sid, "status": "completed",
                         "edge_count": len(edges), "elapsed_seconds": round(paper_elapsed, 3),
+                        "zero_output_reason": zero_reason,
+                        "candidate_triples": int(paper_stats.get("candidate_triples", 0) or 0),
+                        "units_total": int(paper_stats.get("units_total", 0) or 0),
+                        "units_without_candidates": int(
+                            paper_stats.get("units_without_candidates", 0) or 0),
                     }, ensure_ascii=False) + "\n")
                     checkpoint.flush()
                     if hasattr(os, "fsync"):
@@ -492,6 +517,12 @@ def main():
         "edges_written": n_edges,
         "rejects_total": n_rejects,
         "warnings_total": n_warnings,
+        "paper_evidence_coverage": {
+            "papers_with_accepted_edges": papers_with_edges,
+            "papers_without_accepted_edges": n_papers - papers_with_edges,
+            "coverage_rate": round(papers_with_edges / n_papers, 4) if n_papers else 0,
+            "zero_output_reasons": dict(zero_output_reasons),
+        },
         "reject_reasons": dict(reject_reasons),
         "elapsed": _fmt_elapsed(time.time() - _t0),
         "schema_version": schema.schema_version,

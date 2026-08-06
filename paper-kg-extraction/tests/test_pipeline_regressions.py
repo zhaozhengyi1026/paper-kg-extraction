@@ -28,11 +28,20 @@ class _FakeLLM:
         self.calls = 0
         self.metrics = {}
 
-    def complete_json(self, system, user, retries=5):
+    def complete_json(self, system, user, retries=5, expected_key="triples"):
         self.calls += 1
         if self.error:
             raise self.error
         return self.result
+
+
+def test_zero_output_reason_distinguishes_empty_and_rejected():
+    runner = _load_runner()
+    assert runner.zero_output_reason({"candidate_triples": 0}, False) == \
+        "model_returned_no_candidates"
+    assert runner.zero_output_reason({"candidate_triples": 3, "accepted": 0}, False) == \
+        "all_candidates_rejected"
+    assert runner.zero_output_reason({}, True) == "llm_error"
 
 
 def _load_runner():
