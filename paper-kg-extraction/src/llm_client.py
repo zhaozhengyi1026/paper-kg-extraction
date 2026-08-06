@@ -433,6 +433,8 @@ def create_nli_client(fallback_llm=None):
             api_key=nli_key,
             model=nli_model,
             temperature=0,
+            min_interval=float(os.environ.get(
+                "NLI_MIN_INTERVAL", os.environ.get("SENSENOVA_MIN_INTERVAL", "1.0"))),
             max_completion_tokens=int(os.environ.get("NLI_MAX_COMPLETION_TOKENS", "512")),
         )
         if fallback_llm is not None:

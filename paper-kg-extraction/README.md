@@ -82,6 +82,8 @@ python tools/update_ab_test_report.py \
 
 抽取报告中的 `paper_evidence_coverage` 同时记录论文覆盖率和零产出原因，
 区分模型无候选、候选全部被拒绝和 LLM 最终失败。
+并行运行两组 A/B 时建议设置 `NLI_MIN_INTERVAL=2.0`，减少共享 SenseNova
+NLI 配额造成的 429；该间隔独立于主抽取模型。
 
 DeepSeek fallback 使用官方接口：
 
