@@ -11,6 +11,7 @@ v5.1 改进:
 from __future__ import annotations
 
 import re
+from difflib import SequenceMatcher
 
 from segment import clean_text
 
@@ -56,6 +57,23 @@ def find_span(unit_text: str, evidence: str) -> tuple[int, int] | None:
         flexible = None
     if flexible:
         return flexible.start(), flexible.end()
+    # Inline reference markers are a frequent source of otherwise exact quote
+    # failures.  Realign to a source sentence, but return the literal source
+    # span and require near-identity after removing citations.
+    def citation_free(value: str) -> str:
+        value = re.sub(r"\s*\[(?:\d+[\s,;\-–]*)+\]", "", value)
+        value = re.sub(r"(?<=\w)\s*\((?:refs?\.?\s*)?\d+(?:[\s,;\-–]+\d+)*\)", "", value,
+                       flags=re.IGNORECASE)
+        return re.sub(r"[^\w]+", "", value).casefold()
+    wanted = citation_free(ev)
+    if len(wanted) >= 20:
+        for match in re.finditer(r"(?:^|(?<=[.!?。！？])\s+)([^.!?。！？]{6,320}[.!?。！？]?)",
+                                 unit_text):
+            candidate = match.group(1).strip()
+            got = citation_free(candidate)
+            if got and SequenceMatcher(None, wanted, got).ratio() >= 0.94:
+                start = unit_text.find(candidate, match.start())
+                return start, start + len(candidate)
     return None
 
 

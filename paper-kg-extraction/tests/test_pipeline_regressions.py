@@ -72,6 +72,21 @@ def test_checkpoint_includes_zero_edge_papers(tmp_path):
     assert runner.load_processed(checkpoint) == {"pmid:1"}
 
 
+def test_completion_integrity_rejects_missing_or_failed_paper(tmp_path):
+    runner = _load_runner()
+    manifest = tmp_path / "manifest.jsonl"
+    processed = tmp_path / "processed.jsonl"
+    manifest.write_text(
+        '\n'.join(json.dumps({"source_id": sid}) for sid in ("pmid:1", "pmid:2")),
+        encoding="utf-8",
+    )
+    processed.write_text(json.dumps({"source_id": "pmid:1", "status": "completed"}),
+                         encoding="utf-8")
+    result = runner.completion_integrity(manifest, processed, 2, 1)
+    assert not result["complete"]
+    assert result["missing_source_ids"] == ["pmid:2"]
+
+
 def test_db_stream_uses_fulltext_then_abstract_and_shards(tmp_path):
     runner = _load_runner()
     db = tmp_path / "corpus.db"

@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import sys
@@ -65,6 +66,34 @@ _last_calls: dict[str, float] = {}
 
 
 def _rate_limit(provider_key: str, min_interval: float = _MIN_INTERVAL):
+    # Linux server runs may contain multiple extraction processes sharing one
+    # provider quota. Coordinate them through a tiny timestamp file; Windows
+    # development and platforms without fcntl retain the in-process lock.
+    global_dir = os.environ.get("LLM_GLOBAL_RATE_LIMIT_DIR", "/tmp/paper-kg-rate-limit")
+    if os.name == "posix" and global_dir:
+        try:
+            import fcntl
+            directory = Path(global_dir)
+            directory.mkdir(parents=True, exist_ok=True)
+            name = hashlib.sha256(provider_key.encode("utf-8")).hexdigest()[:20] + ".lock"
+            with (directory / name).open("a+", encoding="utf-8") as handle:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                handle.seek(0)
+                try:
+                    last_call = float(handle.read().strip() or 0)
+                except ValueError:
+                    last_call = 0
+                gap = min_interval - (time.time() - last_call)
+                if gap > 0:
+                    time.sleep(gap)
+                handle.seek(0)
+                handle.truncate()
+                handle.write(str(time.time()))
+                handle.flush()
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            return
+        except (ImportError, OSError):
+            pass
     with _rate_lock:
         now = time.time()
         last_call = _last_calls.get(provider_key, 0.0)

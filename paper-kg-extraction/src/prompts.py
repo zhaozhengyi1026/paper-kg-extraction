@@ -204,10 +204,41 @@ _ENTITY_HINT = """实体类型表（选 head_type/tail_type 用）：
     只有当括号内是明确的不同物质时（如 "a saponin purified from Astragalus"）才抽 CONTAINS。"""
 
 
-def _relation_menu(schema) -> str:
+_CORE_RELATIONS = {
+    "WM_TREATS", "WM_INDICATED_FOR", "WM_CONTRAINDICATED_FOR",
+    "WM_HAS_ADVERSE_EFFECT", "HAS_PHENOTYPE", "DIAGNOSED_BY", "MEASURES",
+    "WM_COMORBID_WITH", "DISEASE_LOCALIZES_TO", "GENE_ASSOCIATED_WITH_DISEASE",
+    "EXPOSURE_ASSOCIATED_WITH", "ALIAS_OF",
+}
+
+
+def _routed_relations(schema, text: str = "", compact: bool = False) -> list[str]:
+    low = (text or "").casefold()
+    selected = set(_CORE_RELATIONS)
+    groups = (
+        (r"gene|protein|receptor|enzyme|pathway|signal|express|bind|inhibit|activat|molecular",
+         {"MOLECULARLY_TARGETS", "FORMULA_ACTS_VIA", "PARTICIPATES_IN_PATHWAY",
+          "HAS_GO_PROCESS", "HAS_GO_FUNCTION", "GENE_EXPRESSED_IN", "GENE_INTERACTS_GENE"}),
+        (r"co-admin|combination|interaction|pharmacokinetic|auc|cyp|toxicity",
+         {"DDI", "HDI", "HHI", "INTERACTS_WITH", "COMPLEMENTS_WM_THERAPY", "REGIMEN_INCLUDES"}),
+        (r"herb|formula|decoction|extract|traditional chinese|中医|中药|方剂",
+         {"HERB_CONTAINS_INGREDIENT", "FORMULA_CONTAINS_HERB", "TREATS", "INTEGRATIVE_TREATS"}),
+        (r"trial|study|article|literature|cohort|randomi[sz]",
+         {"STUDIES", "SUPPORTED_BY_LITERATURE"}),
+    )
+    if not compact:
+        for pattern, relations in groups:
+            if __import__("re").search(pattern, low):
+                selected.update(relations)
+    return [rel for rel in PRIORITY_RELATIONS if rel in selected and rel in schema.relation_types] + [
+        rel for rel in schema.relation_types if rel in selected and rel not in PRIORITY_RELATIONS]
+
+
+def _relation_menu(schema, text: str = "", compact: bool = False) -> str:
     lines = []
-    ordered = [rel for rel in PRIORITY_RELATIONS if rel in schema.relation_types]
-    ordered.extend(rel for rel in schema.relation_types if rel not in ordered)
+    ordered = (_routed_relations(schema, text, compact) if text or compact else
+               [rel for rel in PRIORITY_RELATIONS if rel in schema.relation_types] +
+               [rel for rel in schema.relation_types if rel not in PRIORITY_RELATIONS])
     for rel in ordered:
         spec = schema.relation_types.get(rel)
         if not spec:
@@ -220,9 +251,18 @@ def _relation_menu(schema) -> str:
     return "关系菜单（relation: domain -> range；qualifiers 只能取该行白名单）：\n" + "\n".join(lines)
 
 
-def _entity_menu(schema) -> str:
+def _entity_menu(schema, relations: list[str] | None = None) -> str:
     lines = []
+    allowed = None
+    if relations is not None:
+        allowed = set()
+        for relation in relations:
+            spec = schema.relation_types.get(relation, {})
+            allowed.update(spec.get("domain", []) or [])
+            allowed.update(spec.get("range", []) or [])
     for name, spec in schema.entity_types.items():
+        if allowed is not None and name not in allowed:
+            continue
         desc = (spec.get("desc", "") or "").replace("\n", " ")[:80]
         enum_values = spec.get("enum", []) or []
         enum_text = f"; enum={enum_values}" if enum_values else ""
@@ -276,24 +316,28 @@ Huangqi (Astragalus membranaceus) and Dang Gui (Angelica sinensis) are two of th
 
 
 def build_prompt(schema, unit: dict,
-                 entity_type_memory: dict[str, str] | None = None) -> tuple[str, str]:
+                 entity_type_memory: dict[str, str] | None = None,
+                 compact: bool = False) -> tuple[str, str]:
     """返回 (system, user)。user 内嵌 <UNIT>...</UNIT>，供 mock 与真实模型统一解析。"""
     ctx = f"论文章节：{' > '.join(unit.get('chapter_path', []))}（section_type={unit.get('section_type')}）"
     memory = entity_type_memory or {}
     memory_text = "\n".join(
         f"- {name} => {typ}" for name, typ in sorted(memory.items())
     ) or "(none yet; post-processing will enforce consistency)"
-    user = f"""{_ENTITY_HINT}
+    relations = _routed_relations(schema, unit.get("text", ""), compact)
+    entity_hint = "" if compact else _ENTITY_HINT
+    fewshot = "" if compact else _FEWSHOT
+    user = f"""{entity_hint}
 
-{_entity_menu(schema)}
+{_entity_menu(schema, relations)}
 
-{_relation_menu(schema)}
+{_relation_menu(schema, unit.get('text', ''), compact)}
 
 <ENTITY_TYPE_MEMORY>
 {memory_text}
 </ENTITY_TYPE_MEMORY>
 
-{_FEWSHOT}
+{fewshot}
 
 现在抽取下面这个单元。{ctx}
 提示：全文明确陈述且非推测的医学事实均可抽；研究目的、假设和无显著结果不抽。

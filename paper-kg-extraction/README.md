@@ -96,6 +96,17 @@ DEEPSEEK_THINKING=enabled
 DEEPSEEK_MAX_COMPLETION_TOKENS=4096
 NLI_MAX_COMPLETION_TOKENS=512
 ```
+
+抽取器会从现有 schema 中按单元内容选择关系和实体类型子集，不会修改
+schema。整篇首轮没有任何候选时，仅对标题+摘要做一次精简 prompt 补抽；
+补抽仍允许返回空列表，不强制生成事实。Linux 上同一 provider 的多进程默认通过
+`/tmp/paper-kg-rate-limit` 共享限速，可用 `LLM_GLOBAL_RATE_LIMIT_DIR` 更换路径。
+
+运行结束会生成 `completion_status.json`。只有 manifest 中每篇论文都有成功 checkpoint
+且 `llm_errors=0` 时脚本才以 0 退出；不完整运行以退出码 2 结束，上层不得写入
+`PIPELINE_COMPLETED`。`extraction_report.json` 同时记录独立 NLI 的请求、fallback
+和限流指标。
+
 先 `--limit 20` 小批试跑，看 report 的 `reject_stats` 调 prompt / 换模型（见 `docs/EXTRACTION_GUIDE.md` §4）。
 
 ### ③ 验收自检

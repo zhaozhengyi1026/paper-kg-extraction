@@ -13,7 +13,7 @@ from pathlib import Path
 FIELDS = (
     "record_no", "category", "source_id", "head", "head_type", "relation",
     "tail", "tail_type", "evidence_sentence", "confidence", "reason",
-    "detail", "risk_flags",
+    "detail", "risk_flags", "audit_class",
 )
 NEGATION_RE = re.compile(
     r"\b(?:not|without|neither|nor|failed to|lack(?:ing)?|absence of|"
@@ -98,6 +98,16 @@ def _flags(record: dict, category: str) -> list[str]:
     return sorted(set(flags))
 
 
+def _audit_class(flags: list[str], category: str) -> str:
+    deterministic = {"head_not_literal_in_evidence", "tail_not_literal_in_evidence",
+                     "causal_or_predictive_phenotype"}
+    if deterministic.intersection(flags):
+        return "deterministic_violation"
+    if flags or category in {"rejected", "warning"}:
+        return "manual_review"
+    return "no_rule_flag"
+
+
 def run_quality_audit(accepted_path: Path, rejects_path: Path, warnings_path: Path,
                       out_dir: Path) -> dict:
     """Write compact review artifacts and return their machine-readable summary."""
@@ -124,6 +134,7 @@ def run_quality_audit(accepted_path: Path, rejects_path: Path, warnings_path: Pa
                 "reason": record.get("reject_reason") or record.get("warn_reason") or "",
                 "detail": record.get("reject_detail") or record.get("warn_detail") or "",
                 "risk_flags": ";".join(record_flags),
+                "audit_class": _audit_class(record_flags, category),
             }
             rows.append(row)
             categories[category] += 1
@@ -148,6 +159,7 @@ def run_quality_audit(accepted_path: Path, rejects_path: Path, warnings_path: Pa
         },
         "important_note": "Risk flags are review candidates, not medical ground truth.",
     }
+    summary["audit_class_counts"] = dict(Counter(row["audit_class"] for row in rows))
     (out_dir / "quality_summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
     )

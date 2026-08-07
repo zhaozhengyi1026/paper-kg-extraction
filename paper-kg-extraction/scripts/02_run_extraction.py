@@ -41,7 +41,7 @@ for _s in (sys.stdout, sys.stderr):
         pass
 
 from extract import extract_paper, new_run_id  # noqa: E402
-from llm_client import create_extraction_client  # noqa: E402
+from llm_client import create_extraction_client, create_nli_client  # noqa: E402
 from schema_loader import Schema  # noqa: E402
 from interaction_credibility import batch_enrich  # noqa: E402
 from quality_audit import run_quality_audit  # noqa: E402
@@ -181,13 +181,14 @@ def load_processed(path: Path) -> set[str]:
     return processed
 
 
-def extract_one_paper(paper: dict, schema, llm, run_id: str):
+def extract_one_paper(paper: dict, schema, llm, run_id: str, nli_client=None):
     """Extract one paper without writing shared output files."""
     paper_stats: dict = {}
     rejects: list = []
     warnings: list = []
     started = time.monotonic()
-    edges = extract_paper(paper, schema, llm, run_id, paper_stats, rejects, warnings)
+    edges = extract_paper(paper, schema, llm, run_id, paper_stats, rejects, warnings,
+                          nli_client=nli_client)
     edges = batch_enrich(
         edges,
         paper.get("authority_tier", "") or "",
@@ -253,6 +254,36 @@ def reproducibility_metadata(input_manifest: Path) -> dict:
     }
 
 
+def completion_integrity(manifest_path: Path, processed_path: Path,
+                         expected_total: int | None, llm_errors: int) -> dict:
+    """Verify that every manifested paper has a durable successful checkpoint."""
+    manifest_ids = {
+        item["source_id"] for item in _jsonl_objects(manifest_path) if item.get("source_id")
+    }
+    processed_ids = load_processed(processed_path)
+    missing = sorted(manifest_ids - processed_ids)
+    complete = not missing and llm_errors == 0
+    if expected_total is not None:
+        complete = complete and len(processed_ids) >= expected_total
+    return {
+        "complete": complete, "manifest_count": len(manifest_ids),
+        "checkpoint_count": len(processed_ids), "expected_total": expected_total,
+        "llm_errors": llm_errors, "missing_source_ids": missing,
+    }
+
+
+def _jsonl_objects(path: Path):
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            item = json.loads(line)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(item, dict):
+            yield item
+
+
 def main():
     """Run extraction pipeline."""
     ap = argparse.ArgumentParser()
@@ -280,6 +311,7 @@ def main():
 
     schema = Schema()
     llm = create_extraction_client(mock=args.mock)
+    nli_client = None if args.mock else create_nli_client(fallback_llm=llm)
     run_id = new_run_id()
     _t0 = time.time()
     out_path = Path(args.out)
@@ -380,7 +412,8 @@ def main():
         pi = 0
         workers = max(1, min(args.workers, 8))
         if workers == 1:
-            results = (extract_one_paper(p, schema, llm, run_id) for p in pending_papers)
+            results = (extract_one_paper(p, schema, llm, run_id, nli_client)
+                       for p in pending_papers)
             executor = None
         else:
             executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="paper-extract")
@@ -393,7 +426,7 @@ def main():
                     if not chunk:
                         return
                     yield from executor.map(
-                        lambda p: extract_one_paper(p, schema, llm, run_id), chunk)
+                        lambda p: extract_one_paper(p, schema, llm, run_id, nli_client), chunk)
             results = bounded_results()
         for paper, edges, paper_rejects, paper_warns, paper_stats, paper_had_llm_error, paper_elapsed in results:
             sid = paper_source_id(paper)
@@ -533,6 +566,9 @@ def main():
         "model_metrics": (llm.metrics_snapshot() if hasattr(llm, "metrics_snapshot")
                           else {"model": getattr(llm, "model", "mock"),
                                 "metrics": getattr(llm, "metrics", {})}),
+        "nli_model_metrics": (nli_client.metrics_snapshot()
+                              if nli_client is not None and hasattr(nli_client, "metrics_snapshot")
+                              else {}),
         "workers": max(1, min(args.workers, 8)),
         "shard": {"index": args.shard_index, "count": args.shard_count},
         "paper_latency_seconds": {
@@ -545,6 +581,11 @@ def main():
         "reject_stats": stats,
     }
     rep_path = out_path.parent / "extraction_report.json"
+    integrity = completion_integrity(
+        manifest_path, processed_path, total if args.src == "json" else None,
+        int(stats.get("llm_error", 0) or 0),
+    )
+    report["completion_integrity"] = integrity
     rep_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
@@ -570,6 +611,11 @@ def main():
                 "error": type(exc).__name__, "detail": str(exc), "run_id": run_id,
             }, ensure_ascii=False, indent=2), encoding="utf-8")
             print(f"  ! 自动审计失败，详情 -> {error_path}", file=sys.stderr)
+    completion_path = out_path.parent / "completion_status.json"
+    completion_path.write_text(json.dumps(integrity, ensure_ascii=False, indent=2), encoding="utf-8")
+    if not integrity["complete"]:
+        print(f"  x 运行不完整，禁止生成完成标记 -> {completion_path}", file=sys.stderr)
+        raise SystemExit(2)
 
 
 if __name__ == "__main__":

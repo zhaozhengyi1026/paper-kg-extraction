@@ -132,7 +132,9 @@ def skip_nli(evidence: str, relation: str) -> bool:
     )
     phenotype = _re_search(
         r"\b(characteri[sz]ed\s+by|feature\s+of|associated\s+with|showed|exhibited|"
-        r"increased|decreased|elevated|reduced)\b", low
+        r"increased|decreased|elevated|reduced|occurs?|coexist\w*|present\w*\s+with|"
+        r"observed\s+prevalence|prevalence\s+(?:was|of)|diagnos\w*\s+with|"
+        r"case\s+(?:of|with)|criteria\s+(?:require|include)\w*)\b", low
     )
     if relation == "HERB_CONTAINS_INGREDIENT":
         return bool(contains)

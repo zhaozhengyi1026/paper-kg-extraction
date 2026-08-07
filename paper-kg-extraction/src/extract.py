@@ -154,6 +154,26 @@ def _weak_relation_reason(relation: str, evidence: str) -> str:
     if relation in {"TREATS", "WM_TREATS", "INTEGRATIVE_TREATS"}:
         if _PURPOSE_RE.search(evidence) or _HYPOTHESIS_RE.search(evidence):
             return "study purpose or hypothesis does not establish treatment efficacy"
+        usage_only = _re.search(
+            r"\b(?:was|were|is|are|be|been)?\s*(?:used|administered|given|received|"
+            r"underwent|treated\s+with|therapy\s+with)\b", evidence, _re.IGNORECASE)
+        efficacy = _re.search(
+            r"\b(?:effective|efficacy|benefit\w*|improv\w*|ameliorat\w*|alleviat\w*|"
+            r"reduc\w*|decreas\w*|prevent\w*|resolved?|remission|response|successful|"
+            r"indicated\s+for|recommended\s+for|first[- ]line|standard\s+(?:treatment|therapy))\b",
+            evidence, _re.IGNORECASE)
+        if usage_only and not efficacy:
+            return "treatment use or administration alone does not establish efficacy"
+    if relation == "MEASURES" and not _re.search(
+        r"\b(?:measur\w*|quantif\w*|assess\w*|determin\w*|detect\w*|indicat\w*|"
+        r"marker\s+(?:of|for)|reflect\w*|level\s+of|concentration\s+of|score\s+for)\b",
+        evidence, _re.IGNORECASE):
+        return "association or prediction alone does not establish measurement"
+    if relation == "DIAGNOSED_BY" and not _re.search(
+        r"\b(?:diagnos\w*|detect\w*|identif\w*|confirm\w*|screen\w*|criteria|"
+        r"test\w*\s+(?:for|show)|revealed\s+by|on\s+(?:CT|MRI|OCT|ultrasound|biopsy))\b",
+        evidence, _re.IGNORECASE):
+        return "association or prediction alone does not establish diagnosis"
     if relation == "COMPLEMENTS_WM_THERAPY":
         if _re.search(r"\btreated\s+with\b.{0,100}\bor\b", evidence, _re.IGNORECASE):
             return "parallel treatments joined by 'or' do not establish combination therapy"
@@ -171,7 +191,8 @@ _FINITE_PREDICATE_RE = _re.compile(
     r"detect\w*|diagnos\w*|measur\w*|interact\w*|bind\w*|target\w*|"
     r"inhibit\w*|activat\w*|regulat\w*|express\w*|associat\w*|"
     r"correlat\w*|treat\w*|improv\w*|reduc\w*|caus\w*|induc\w*|"
-    r"locali[sz]\w*|present\w*|characteri[sz]\w*)\b|"
+    r"locali[sz]\w*|present\w*|characteri[sz]\w*|occurs?|coexist\w*|"
+    r"prevalence|develop\w*|include\w*|require\w*)\b|"
     r"治疗|改善|降低|检测|诊断|表达|调控|靶向|相关|位于|表现",
     _re.IGNORECASE,
 )
@@ -193,10 +214,12 @@ def _mechanism_evidence_grade(evidence: str) -> str:
                   r"recogniz(?:e|es|ed|ing)|specific\s+for|"
                   r"(?:is|was|are|were)\s+(?:a\s+|an\s+)?(?:direct\s+|downstream\s+|specific\s+)?target\s+of|"
                   r"\btarget(?:s|ed|ing)?\b|"
-                  r"antibod(?:y|ies)\s+(?:against|to)|(?:selective\s+)?inhibitor\s+of)\b", low):
+                  r"antibod(?:y|ies)\s+(?:against|to)|(?:selective\s+)?inhibitor\s+of|"
+                  r"(?:receptor\s+)?agonist\s+(?:of|for)|natural\s+ligand\s+(?:of|for)|"
+                  r"affinity\s+(?:for|to)|active[- ]site\s+bind|cofactor\s+(?:for|of))\b", low):
         return "direct"
     if _re.search(r"\b(inhibit|suppress|block|modulat|down[- ]?regulat|up[- ]?regulat|activat|"
-                  r"knockdown|silenc|phosphorylat)\w*\b", low):
+                  r"knockdown|silenc|phosphorylat|stabili[sz])\w*\b", low):
         return "regulatory"
     if _re.search(r"\b(expression|expressed|cleavage|co[- ]?express|abundance|level)\w*\b", low):
         return "indirect"
@@ -213,8 +236,8 @@ _CAUSAL_OR_PREDICTIVE_RE = _re.compile(
 
 def _phenotype_semantics_reason(head_type: str, evidence: str) -> str:
     """Reject causal/predictive claims that cannot truthfully mean HAS_PHENOTYPE."""
-    if head_type in {"Exposure", "LabTest", "Procedure"} and _CAUSAL_OR_PREDICTIVE_RE.search(evidence):
-        return "causal or predictive evidence does not establish an intrinsic phenotype"
+    if head_type in {"Exposure", "LabTest", "Procedure"}:
+        return f"{head_type} cannot have an intrinsic phenotype under HAS_PHENOTYPE"
     return ""
 
 
@@ -351,7 +374,10 @@ def _canonicalize_entity_name(name: str, entity_type: str,
 def extract_paper(paper: dict, schema, llm, run_id: str,
                   stats: dict | None = None,
                   reject_log: list | None = None,
-                  warn_log: list | None = None) -> list[dict]:
+                  warn_log: list | None = None,
+                  nli_client=None,
+                  compact_prompt: bool = False,
+                  allow_zero_retry: bool = True) -> list[dict]:
     stats = stats if stats is not None else {}
     reject_log = reject_log if reject_log is not None else []
     warn_log = warn_log if warn_log is not None else []
@@ -359,7 +385,7 @@ def extract_paper(paper: dict, schema, llm, run_id: str,
     paper["_abbreviations"] = _extract_abbreviations(paper)
 
     units = segment_paper(paper)
-    stats["units_total"] = len(units)
+    stats["units_total"] = stats.get("units_total", 0) + len(units)
     method = "mock" if getattr(llm, "mock", False) else "teacher_llm"
     tier = _tier_from_level(paper.get("evidence_level", ""))
     conf = round(_BASE.get("teacher_llm", 0.7) * _TIER_FACTOR.get(tier, 0.85), 3)
@@ -369,7 +395,10 @@ def extract_paper(paper: dict, schema, llm, run_id: str,
 
     # ── NLI 客户端 + 缓存 + 类型一致性 ──
     # mock 模式下不创建 NLI 客户端（避免尝试连接 API）
-    if getattr(llm, "mock", False):
+    if nli_client is not None:
+        nli_llm = nli_client
+        nli_fallback_llm = None
+    elif getattr(llm, "mock", False):
         nli_llm = None
         nli_fallback_llm = None
     else:
@@ -383,7 +412,8 @@ def extract_paper(paper: dict, schema, llm, run_id: str,
     nunits = len(units)
     print(f"    分 {nunits} 个语义单元", file=sys.stderr, flush=True)
     for ui, unit in enumerate(units, 1):
-        system, user = build_prompt(schema, unit, entity_type_memory=paper_type_map)
+        system, user = build_prompt(schema, unit, entity_type_memory=paper_type_map,
+                                    compact=compact_prompt)
         print(f"    [{ui}/{nunits}] LLM 调用中…", file=sys.stderr, flush=True)
         try:
             resp = llm.complete_json(system, user)
@@ -456,6 +486,23 @@ def extract_paper(paper: dict, schema, llm, run_id: str,
                 continue
             edge_positions[dedup_key] = len(out)
             out.append(edge)
+    # A single compact title/abstract pass improves recall only when the normal
+    # full-paper pass returned no candidates at all. It never forces a fact.
+    if (allow_zero_retry and not out and not stats.get("candidate_triples", 0)
+            and (paper.get("abstract") or "").strip()):
+        _bump(stats, "zero_candidate_retry_papers")
+        retry_paper = dict(paper)
+        retry_paper["sections"] = [{
+            "title": "Compact recall pass",
+            "text": " ".join(filter(None, [paper.get("title", ""), paper.get("abstract", "")])),
+        }]
+        retry_edges = extract_paper(
+            retry_paper, schema, llm, run_id, stats, reject_log, warn_log,
+            nli_client=nli_llm, compact_prompt=True, allow_zero_retry=False,
+        )
+        if retry_edges:
+            _bump(stats, "zero_candidate_retry_recovered")
+            return retry_edges
     return out
 
 
@@ -482,6 +529,16 @@ def _has_negation(evidence: str, relation: str,
                          evidence, _re.IGNORECASE):
         return False, ""
     cleaned = _mask_non_negative_constructions(evidence)
+    # Comparisons of two positive treatments are not negations of either
+    # treatment, and contrast clauses must not leak polarity across "but".
+    cleaned = _re.sub(
+        r"\bno\s+(?:statistically\s+)?significant\s+differences?\b",
+        "differences", cleaned, flags=_re.IGNORECASE)
+    clauses = _re.split(r"(?<=[.;!?])\s+|\b(?:but|however|whereas|although)\b", cleaned,
+                        flags=_re.IGNORECASE)
+    tail_scope = [c for c in clauses if _entity_mentioned(tail, c)]
+    if tail_scope:
+        cleaned = " ".join(tail_scope)
     cue = _RELATION_POLARITY_CUES.get(relation, "effect|association|interaction")
     tail_pattern = _entity_scope_pattern(tail)
     cue_pattern = f"(?:{cue})\\w*"
@@ -807,11 +864,21 @@ def _make_edge(tr, unit, schema, run_id, method, tier, conf,
             evidence_text, head, rel, tail, nli_llm, nli_fallback, nli_cache, stats
         )
         if nli_label == "contradiction":
-            _bump(stats, "nli_reject")
-            detail = f"NLI contradiction: evidence contradicts {nli_hyp}"
-            print("      REJ nli: " + detail[:120], file=sys.stderr, flush=True)
-            _reject("nli_contradiction", detail)
-            return None
+            deterministic_negation, neg_detail = _has_negation(
+                evidence_text, rel, head, tail)
+            if deterministic_negation:
+                _bump(stats, "nli_reject")
+                detail = f"NLI contradiction confirmed by explicit negation: {neg_detail}"
+                print("      REJ nli: " + detail[:120], file=sys.stderr, flush=True)
+                _reject("nli_contradiction", detail)
+                return None
+            # A low prevalence ("only one patient", "14.3%") is not a
+            # contradiction. Treat unconfirmed model-only contradiction as a
+            # review warning instead of deleting a supported fact.
+            _bump(stats, "nli_unconfirmed_contradiction")
+            conf = round(conf * _NLI_NEUTRAL_FACTOR, 3)
+            detail = f"NLI contradiction not confirmed by explicit relation negation: {nli_hyp}"
+            _warn("nli_unconfirmed_contradiction", detail)
         elif nli_label == "neutral":
             if _neutral_evidence_is_fragment(evidence_text):
                 _bump(stats, "nli_neutral_weak_evidence")

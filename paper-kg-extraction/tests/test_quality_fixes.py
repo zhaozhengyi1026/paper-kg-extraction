@@ -87,6 +87,14 @@ def test_negation_is_scoped_to_relation():
     assert extract._has_negation(
         "该治疗未显著改善蛋白尿", "TREATS", "该治疗", "蛋白尿",
     )[0]
+    assert not extract._has_negation(
+        "There were no significant differences. Both infliximab and adalimumab are effective.",
+        "WM_TREATS", "infliximab", "effective",
+    )[0]
+    assert not extract._has_negation(
+        "NLRC5 is not a risk factor for T1DM but predisposes to IM-diabetes.",
+        "GENE_ASSOCIATED_WITH_DISEASE", "NLRC5", "IM-diabetes",
+    )[0]
 
 
 def test_hdi_requires_specific_pk_context():
@@ -108,6 +116,18 @@ def test_weak_treatment_and_combination_evidence_is_rejected():
     assert not extract._weak_relation_reason(
         "COMPLEMENTS_WM_THERAPY",
         "MI combined with Captopril significantly reduced albuminuria.",
+    )
+    assert extract._weak_relation_reason(
+        "WM_TREATS", "Melphalan was administered to patients with retinoblastoma."
+    )
+    assert not extract._weak_relation_reason(
+        "WM_TREATS", "Melphalan significantly reduced retinoblastoma recurrence."
+    )
+    assert extract._weak_relation_reason(
+        "MEASURES", "HbA1c was associated with poor outcome."
+    )
+    assert extract._weak_relation_reason(
+        "DIAGNOSED_BY", "Age predicted occult pathology."
     )
 
 
@@ -159,6 +179,9 @@ def test_causal_or_predictive_claim_is_not_a_phenotype():
     assert not extract._phenotype_semantics_reason(
         "DiseaseWM", "Diabetes is characterized by hyperglycemia."
     )
+    assert extract._phenotype_semantics_reason(
+        "Exposure", "Rising temperatures are associated with heat-related illness."
+    )
 
 
 def test_entity_matching_handles_alias_surface_variants():
@@ -191,6 +214,8 @@ def test_neutral_fragment_requires_complete_predicate():
     assert extract._neutral_evidence_is_fragment("PI3K with wortmannin")
     assert extract._neutral_evidence_is_fragment("employment status among persons with bipolar disorder")
     assert not extract._neutral_evidence_is_fragment("HSVdwi was detected in patients with recent CVT")
+    assert not extract._neutral_evidence_is_fragment("Brainstem pathology occurs in 50% of SIDS cases")
+    assert not extract._neutral_evidence_is_fragment("PCOS and psychological distress frequently coexist")
 
 
 def test_duplicate_evidence_prefers_stronger_complete_quote():
@@ -217,6 +242,25 @@ def test_prompt_fewshots_follow_evidence_and_type_rules():
     menu = prompts._relation_menu(Schema())
     assert "MOLECULARLY_TARGETS" in menu
     assert "qualifiers=[action, affinity]" in menu
+
+
+def test_prompt_routes_schema_without_modifying_it():
+    schema = Schema()
+    clinical = prompts._routed_relations(schema, "Patients were diagnosed and treated", False)
+    molecular = prompts._routed_relations(schema, "The protein binds a receptor pathway", False)
+    compact = prompts._routed_relations(schema, "The protein binds a receptor pathway", True)
+    assert "WM_TREATS" in clinical
+    assert "MOLECULARLY_TARGETS" in molecular
+    assert "MOLECULARLY_TARGETS" not in compact
+    assert len(clinical) < len(schema.relation_types)
+
+
+def test_citation_aware_provenance_returns_literal_source():
+    source = "The PHQ-9 [12, 13] measures depressive symptoms in patients."
+    quoted = "The PHQ-9 measures depressive symptoms in patients."
+    result = verify_evidence(source, quoted)
+    assert result["ok"]
+    assert result["evidence_sentence"] == source
 
 
 def test_segment_normalizes_prompt_and_provenance_whitespace_once():
